@@ -76,28 +76,12 @@ def get_sheet():
 def get_next_video(sheet):
     """
     E열이 '업로드전'인 행 반환
-    C열(젠스파크URL) 또는 D열(드롭박스URL) 중 하나라도 있으면 OK
+    - G열 예약시간이 현재보다 과거이거나 같으면 → 업로드
+    - G열 비어있으면 → 즉시 업로드
     """
-    now_kst = datetime.now(KST)
-    today_str = now_kst.strftime("%Y-%m-%d")
+    now_kst  = datetime.now(KST)
     all_rows = sheet.get_all_values()
 
-    # 예약 날짜가 오늘인 행 먼저
-    for i, row in enumerate(all_rows[1:], start=2):
-        while len(row) < 7:
-            row.append("")
-        status    = row[4].strip()  # E열
-        scheduled = row[6].strip()  # G열
-        video_url = row[2].strip()  # C열 젠스파크
-        dropbox   = row[3].strip()  # D열 드롭박스
-        if status == "업로드전" and scheduled and (video_url or dropbox):
-            try:
-                if scheduled[:10] == today_str:
-                    return i, row, scheduled
-            except:
-                pass
-
-    # 예약 없는 행
     for i, row in enumerate(all_rows[1:], start=2):
         while len(row) < 7:
             row.append("")
@@ -105,8 +89,30 @@ def get_next_video(sheet):
         scheduled = row[6].strip()
         video_url = row[2].strip()
         dropbox   = row[3].strip()
-        if status == "업로드전" and not scheduled and (video_url or dropbox):
+
+        if status != "업로드전":
+            continue
+        if not video_url and not dropbox:
+            continue
+
+        # G열 비어있으면 즉시 업로드
+        if not scheduled:
             return i, row, ""
+
+        # G열 있으면 예약시간 체크 (과거 포함 모두 업로드)
+        try:
+            s = scheduled.strip()
+            if len(s) == 10:
+                s += " 00:00"
+            sched_dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
+            sched_kst = sched_dt.replace(tzinfo=KST)
+            if now_kst >= sched_kst:   # 예약시간 도래
+                return i, row, scheduled
+            else:
+                print(f"   ⏰ {i}행 예약 대기: {scheduled} (아직 {int((sched_kst-now_kst).total_seconds()//3600)}시간 남음)")
+        except Exception as e:
+            print(f"   ⚠️ {i}행 날짜 파싱 오류: {e}")
+            continue
 
     return None, None, None
 
