@@ -198,24 +198,31 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
     if "#shorts" not in description.lower():
         description += "\n\n#shorts"
 
-    # 공개 상태
+   # 공개 상태
+    now_kst = datetime.now(KST)
     if scheduled:
         try:
             if len(scheduled) == 10:
                 scheduled += " 09:00"
             sched_dt  = datetime.strptime(scheduled, "%Y-%m-%d %H:%M")
             sched_kst = sched_dt.replace(tzinfo=KST)
-            sched_utc = sched_kst.astimezone(timezone.utc)
-            publish_at = sched_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            privacy = "private"
-            print(f"⏰ 예약: {scheduled} KST")
+            # 예약시간이 미래면 예약공개, 과거면 즉시공개
+            if sched_kst > now_kst:
+                sched_utc  = sched_kst.astimezone(timezone.utc)
+                publish_at = sched_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                privacy    = "private"
+                print(f"⏰ 예약공개: {scheduled} KST")
+            else:
+                publish_at = None
+                privacy    = "public"
+                print(f"🚀 즉시공개 (예약시간 {scheduled} 이미 지남)")
         except Exception as e:
             print(f"⚠️ 날짜 파싱 실패({e}), 즉시공개")
             publish_at = None
-            privacy = "public"
+            privacy    = "public"
     else:
         publish_at = None
-        privacy = "public"
+        privacy    = "public"
         print("🚀 즉시 공개")
 
     body = {
