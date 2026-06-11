@@ -5,6 +5,7 @@ YouTube 자동 업로드 스크립트 v5
 - D열 dropbox_url 있으면 드롭박스 사용, 없으면 C열 젠스파크 URL 사용
 - F열 채널 번호로 채널 선택 (1=모먼트랩, 2=데일리인사이트, 3=생활정보TV)
 - G열 예약날짜 있으면 예약공개, 없으면 즉시공개
+- 채널별 전용 토큰 지원 (YOUTUBE_TOKEN_JSON_CH1 ~ CH9)
 """
 
 # ──────────────────────────────────────────
@@ -169,8 +170,18 @@ def download_url(url, is_dropbox=False):
 # ──────────────────────────────────────────
 # YouTube 업로드
 # ──────────────────────────────────────────
-def get_youtube_service():
-    token_data = json.loads(YOUTUBE_TOKEN_JSON)
+def get_youtube_service(channel_num="1"):
+    # 채널별 전용 토큰 우선 사용, 없으면 기본 토큰
+    token_env_key = f"YOUTUBE_TOKEN_JSON_CH{channel_num}"
+    token_json = os.environ.get(token_env_key)
+
+    if token_json:
+        print(f"✅ {token_env_key} 토큰 사용")
+    else:
+        print(f"⚠️ {token_env_key} 없음 → 기본 YOUTUBE_TOKEN_JSON 사용")
+        token_json = os.environ["YOUTUBE_TOKEN_JSON"]
+
+    token_data = json.loads(token_json)
     creds = OAuthCredentials(
         token=token_data.get("token"),
         refresh_token=token_data["refresh_token"],
@@ -198,7 +209,7 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
     if "#shorts" not in description.lower():
         description += "\n\n#shorts"
 
-   # 공개 상태
+    # 공개 상태
     now_kst = datetime.now(KST)
     if scheduled:
         try:
@@ -298,7 +309,7 @@ def main():
     local_path = download_video(video_url, dropbox_url)
 
     try:
-        yt_service = get_youtube_service()
+        yt_service = get_youtube_service(channel_num)
         video_id = upload_to_youtube(
             yt_service, local_path, title, script, scheduled, channel_num
         )

@@ -25,6 +25,15 @@ jobs:
           DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME }}
-          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_TOKEN_JSON_CH1: ${{ secrets.YOUTUBE_TOKEN_JSON_CH1 }}
+          YOUTUBE_TOKEN_JSON_CH2: ${{ secrets.YOUTUBE_TOKEN_JSON_CH2 }}
+          YOUTUBE_TOKEN_JSON_CH3: ${{ secrets.YOUTUBE_TOKEN_JSON_CH3 }}
+          YOUTUBE_TOKEN_JSON_CH4: ${{ secrets.YOUTUBE_TOKEN_JSON_CH4 }}
+          YOUTUBE_TOKEN_JSON_CH5: ${{ secrets.YOUTUBE_TOKEN_JSON_CH5 }}
+          YOUTUBE_TOKEN_JSON_CH6: ${{ secrets.YOUTUBE_TOKEN_JSON_CH6 }}
+          YOUTUBE_TOKEN_JSON_CH7: ${{ secrets.YOUTUBE_TOKEN_JSON_CH7 }}
+          YOUTUBE_TOKEN_JSON_CH8: ${{ secrets.YOUTUBE_TOKEN_JSON_CH8 }}
+          YOUTUBE_TOKEN_JSON_CH9: ${{ secrets.YOUTUBE_TOKEN_JSON_CH9 }}
         run: python upload.py
