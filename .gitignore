@@ -1,0 +1,7 @@
+client_secret.json
+youtube_token.json
+dropbox_token.json
+config.json
+make-drive-upload-*.json
+__pycache__/
+*.pyc
