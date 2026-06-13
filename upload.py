@@ -6,6 +6,7 @@ YouTube 자동 업로드 스크립트 v5
 - F열 채널 번호로 채널 선택 (1=모먼트랩, 2=데일리인사이트, 3=생활정보TV)
 - G열 예약날짜 있으면 예약공개, 없으면 즉시공개
 - 채널별 전용 토큰 지원 (YOUTUBE_TOKEN_JSON_CH1 ~ CH9)
+- 여러 시트(숏츠시트, 카툰썰시트 등) 순회 지원
 """
 
 # ──────────────────────────────────────────
@@ -55,23 +56,34 @@ KST = timezone(timedelta(hours=9))
 # ──────────────────────────────────────────
 DROPBOX_TOKEN      = os.environ.get("DROPBOX_TOKEN", "")
 GOOGLE_SHEET_ID    = os.environ["GOOGLE_SHEET_ID"]
-GOOGLE_SHEET_NAME  = os.environ.get("GOOGLE_SHEET_NAME", "숏츠시트")
 YOUTUBE_TOKEN_JSON = os.environ["YOUTUBE_TOKEN_JSON"]
 GOOGLE_SA_JSON     = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+
+# 처리할 시트 이름 목록
+# GOOGLE_SHEET_NAMES="숏츠시트,카툰썰시트" 처럼 쉼표로 여러 개 지정 가능
+# 미지정 시 기존 동작 유지를 위해 GOOGLE_SHEET_NAME(단일, 기본값 "숏츠시트")도 함께 확인
+_sheet_names_env = os.environ.get("GOOGLE_SHEET_NAMES", "")
+if _sheet_names_env.strip():
+    SHEET_NAMES = [s.strip() for s in _sheet_names_env.split(",") if s.strip()]
+else:
+    SHEET_NAMES = [os.environ.get("GOOGLE_SHEET_NAME", "숏츠시트")]
 
 
 # ──────────────────────────────────────────
 # 구글 시트 연결
 # ──────────────────────────────────────────
-def get_sheet():
+def get_client():
     creds_dict = json.loads(GOOGLE_SA_JSON)
     scopes = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    return client.open_by_key(GOOGLE_SHEET_ID).worksheet(GOOGLE_SHEET_NAME)
+    return gspread.authorize(creds)
+
+
+def get_sheet(client, sheet_name):
+    return client.open_by_key(GOOGLE_SHEET_ID).worksheet(sheet_name)
 
 
 def get_next_video(sheet):
@@ -285,39 +297,51 @@ def main():
     print("=" * 50)
     now_kst = datetime.now(KST)
     print(f"🎬 YouTube 자동 업로드 v5 ({now_kst.strftime('%Y-%m-%d %H:%M KST')})")
+    print(f"   대상 시트: {', '.join(SHEET_NAMES)}")
     print("=" * 50)
 
-    sheet = get_sheet()
-    row_num, row, scheduled = get_next_video(sheet)
+    client = get_client()
 
-    if row is None:
-        print("⚠️  업로드할 영상 없음 (E열='업로드전' 확인)")
-        return
+    # 여러 시트를 순회하며 업로드할 영상 탐색
+    # 시트별로 하나씩 처리(한 번 실행에 시트당 최대 1개 업로드)
+    for sheet_name in SHEET_NAMES:
+        print(f"\n📄 시트 확인: {sheet_name}")
+        try:
+            sheet = get_sheet(client, sheet_name)
+        except Exception as e:
+            print(f"   ⚠️ 시트 열기 실패: {e}")
+            continue
 
-    title       = row[0].strip()   # A열
-    script      = row[1].strip()   # B열
-    video_url   = row[2].strip()   # C열 젠스파크
-    dropbox_url = row[3].strip()   # D열 드롭박스
-    channel_num = row[5].strip() if len(row) > 5 else "1"  # F열
+        row_num, row, scheduled = get_next_video(sheet)
 
-    print(f"\n📋 업로드 정보:")
-    print(f"   제목: {title}")
-    print(f"   채널: {CHANNEL_NAMES.get(channel_num, channel_num)}")
-    print(f"   소스: {'드롭박스' if dropbox_url else '젠스파크 직접'}")
-    print(f"   예약: {scheduled if scheduled else '즉시공개'}")
+        if row is None:
+            print("   ⚠️  업로드할 영상 없음 (E열='업로드전' 확인)")
+            continue
 
-    local_path = download_video(video_url, dropbox_url)
+        title       = row[0].strip()   # A열
+        script      = row[1].strip()   # B열
+        video_url   = row[2].strip()   # C열 젠스파크
+        dropbox_url = row[3].strip()   # D열 드롭박스
+        channel_num = row[5].strip() if len(row) > 5 else "1"  # F열
 
-    try:
-        yt_service = get_youtube_service(channel_num)
-        video_id = upload_to_youtube(
-            yt_service, local_path, title, script, scheduled, channel_num
-        )
-        mark_as_done(sheet, row_num, video_id)
-        print(f"\n🎉 완료!")
-    finally:
-        if os.path.exists(local_path):
-            os.remove(local_path)
+        print(f"\n📋 업로드 정보:")
+        print(f"   제목: {title}")
+        print(f"   채널: {CHANNEL_NAMES.get(channel_num, channel_num)}")
+        print(f"   소스: {'드롭박스' if dropbox_url else '젠스파크 직접'}")
+        print(f"   예약: {scheduled if scheduled else '즉시공개'}")
+
+        local_path = download_video(video_url, dropbox_url)
+
+        try:
+            yt_service = get_youtube_service(channel_num)
+            video_id = upload_to_youtube(
+                yt_service, local_path, title, script, scheduled, channel_num
+            )
+            mark_as_done(sheet, row_num, video_id)
+            print(f"\n🎉 [{sheet_name}] 완료!")
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
 
 if __name__ == "__main__":
     main()
