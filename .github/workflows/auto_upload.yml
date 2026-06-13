@@ -22,6 +22,7 @@ jobs:
       
       - name: YouTube 자동 업로드 실행
         env:
+          GOOGLE_SHEET_NAMES: ${{ secrets.GOOGLE_SHEET_NAMES }}
           DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME }}
