@@ -86,19 +86,39 @@ def get_sheet(client, sheet_name):
     return client.open_by_key(GOOGLE_SHEET_ID).worksheet(sheet_name)
 
 
+def _uploaded_today_for_channel(all_rows, channel_num, today_str):
+    """같은 채널로 오늘 이미 업로드 완료된 행이 있는지 확인.
+    mark_as_done()이 G열을 '실제 업로드 일시'로 갱신해두기 때문에,
+    예약이 잘못 겹쳐도 이 체크가 하루 1개를 보장하는 마지막 안전장치다."""
+    for row in all_rows[1:]:
+        while len(row) < 7:
+            row.append("")
+        status = row[4].strip()
+        ch     = row[5].strip() if len(row) > 5 else ""
+        sched  = row[6].strip()
+        if status == "업로드완료" and ch == str(channel_num).strip() and sched[:10] == today_str:
+            return True
+    return False
+
+
 def get_next_video(sheet):
     """
     E열이 '업로드전'인 행 반환
     - G열 예약시간이 현재보다 과거이거나 같으면 → 업로드
     - G열 비어있으면 → 즉시 업로드
+    - 안전장치: 같은 채널이 오늘 이미 1개 업로드됐으면, 그 채널의 다른 행은
+      예약시간이 지났어도 건너뛴다 (시트에 같은 날짜로 두 개가 겹쳐 잡혀도
+      하루 1개 업로드 원칙이 코드 레벨에서 강제됨)
     """
-    now_kst  = datetime.now(KST)
-    all_rows = sheet.get_all_values()
+    now_kst   = datetime.now(KST)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    all_rows  = sheet.get_all_values()
 
     for i, row in enumerate(all_rows[1:], start=2):
         while len(row) < 7:
             row.append("")
         status    = row[4].strip()
+        ch_num    = row[5].strip() if len(row) > 5 else "1"
         scheduled = row[6].strip()
         video_url = row[2].strip()
         dropbox   = row[3].strip()
@@ -108,32 +128,48 @@ def get_next_video(sheet):
         if not video_url and not dropbox:
             continue
 
-        # G열 비어있으면 즉시 업로드
+        is_due = False
         if not scheduled:
-            return i, row, ""
+            # G열 비어있으면 즉시 업로드
+            is_due = True
+        else:
+            # G열 있으면 예약시간 체크 (과거 포함 모두 업로드 대상)
+            try:
+                s = scheduled.strip()
+                if len(s) == 10:
+                    s += " 00:00"
+                sched_dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
+                sched_kst = sched_dt.replace(tzinfo=KST)
+                if now_kst >= sched_kst:
+                    is_due = True
+                else:
+                    print(f"   ⏰ {i}행 예약 대기: {scheduled} (아직 {int((sched_kst-now_kst).total_seconds()//3600)}시간 남음)")
+            except Exception as e:
+                print(f"   ⚠️ {i}행 날짜 파싱 오류: {e}")
+                continue
 
-        # G열 있으면 예약시간 체크 (과거 포함 모두 업로드)
-        try:
-            s = scheduled.strip()
-            if len(s) == 10:
-                s += " 00:00"
-            sched_dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
-            sched_kst = sched_dt.replace(tzinfo=KST)
-            if now_kst >= sched_kst:   # 예약시간 도래
-                return i, row, scheduled
-            else:
-                print(f"   ⏰ {i}행 예약 대기: {scheduled} (아직 {int((sched_kst-now_kst).total_seconds()//3600)}시간 남음)")
-        except Exception as e:
-            print(f"   ⚠️ {i}행 날짜 파싱 오류: {e}")
+        if not is_due:
             continue
+
+        if _uploaded_today_for_channel(all_rows, ch_num, today_str):
+            print(f"   🛑 {i}행: 채널{ch_num}({CHANNEL_NAMES.get(ch_num, ch_num)})은 "
+                  f"오늘({today_str}) 이미 1개 업로드 완료 → 안전장치로 건너뜀 "
+                  f"(예약이 겹쳤더라도 하루 1개로 제한, 다음 실행에서 자동 재시도)")
+            continue
+
+        return i, row, scheduled
 
     return None, None, None
 
 
 def mark_as_done(sheet, row_num, video_id):
+    now_kst = datetime.now(KST)
     sheet.update_cell(row_num, 5, "업로드완료")
+    # G열을 '실제 업로드된 일시'로 갱신 — 예약이 밀려서 늦게 올라간 경우에도
+    # 정확한 실제 업로드 시각을 남겨야 위의 하루 1개 안전장치가 제대로 동작한다.
+    sheet.update_cell(row_num, 7, now_kst.strftime("%Y-%m-%d %H:%M"))
     sheet.update_cell(row_num, 8, f"https://youtube.com/shorts/{video_id}")
-    print(f"✅ 시트 업데이트: {row_num}행 → 업로드완료")
+    print(f"✅ 시트 업데이트: {row_num}행 → 업로드완료 (G열 = 실제 업로드 시각 {now_kst.strftime('%Y-%m-%d %H:%M')})")
 
 
 # ──────────────────────────────────────────
