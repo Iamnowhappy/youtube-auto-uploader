@@ -70,6 +70,7 @@ class App(tk.Tk):
             "        a34365460@gmail.com\n\n"
             "계정으로 로그인되어 있어야 수정됩니다.\n"
             "(다른 계정이면 시트 수정 불가)")
+        webbrowser.open("https://docs.google.com/spreadsheets/d/1VGHH_xkbNWKfzMLWIXeJRM3GHvjVEm_nvZM8FEhTK40/edit?gid=0#gid=0")
 
     # ── 설정 ────────────────────────────────────
     def _load_cfg(self):
