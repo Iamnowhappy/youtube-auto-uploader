@@ -151,11 +151,11 @@ def get_next_video(sheet):
         if not is_due:
             continue
 
-        if _uploaded_today_for_channel(all_rows, ch_num, today_str):
-            print(f"   🛑 {i}행: 채널{ch_num}({CHANNEL_NAMES.get(ch_num, ch_num)})은 "
-                  f"오늘({today_str}) 이미 1개 업로드 완료 → 안전장치로 건너뜀 "
-                  f"(예약이 겹쳤더라도 하루 1개로 제한, 다음 실행에서 자동 재시도)")
-            continue
+       # if _uploaded_today_for_channel(all_rows, ch_num, today_str):
+       #      print(f"   🛑 {i}행: 채널{ch_num}({CHANNEL_NAMES.get(ch_num, ch_num)})은 "
+       #           f"오늘({today_str}) 이미 1개 업로드 완료 → 안전장치로 건너뜀 "
+       #         f"(예약이 겹쳤더라도 하루 1개로 제한, 다음 실행에서 자동 재시도)")
+       #   continue
 
         return i, row, scheduled
 
