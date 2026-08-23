@@ -36,18 +36,58 @@ CHANNEL_NAMES = {
     "9": "GlobalTopTier",
 }
 
+# 2026-07-25 추가: defaultLanguage가 지금까지 전 채널 "ko"로 하드코딩돼
+# 있었음 — 채널7(27_japan_senior_story_shorts + 29_japan_senior_story_longform,
+# 대본이 전부 일본어)에는 명백히 잘못된 값이었다(YouTube가 검색/추천에서
+# 언어를 매칭할 때 이 메타데이터를 쓰기 때문에, 일본어 콘텐츠에 "ko"가
+# 붙어 있으면 일본 시청자에게 덜 노출될 수 있음). 여기 없는 채널은 지금까지
+# 처럼 "ko"로 그대로 동작(기존 동작 100% 보존) — 실제 콘텐츠 언어가 확인된
+# 채널만 여기 추가할 것.
+CHANNEL_LANGUAGE_MAP = {
+    "7": "ja",   # 일본 시니어 사연(쇼츠+롱폼) — 대본이 전부 일본어
+}
+
+# 2026-07-30 추가: 유튜브 스튜디오에서 "AI 사용" 공개 질문(실제 인물처럼
+# 보이는 것을 AI로 만들었는지 등)에 매번 사람이 직접 "예"를 눌러야 했음
+# (자동화로 업로드되니 아무도 이 질문에 답을 안 넣은 채로 올라갔었고,
+# 이후 유튜브가 자체 감지로 라벨을 뒤늦게 붙이는 걸 사용자가 발견함).
+# YouTube Data API의 status.containsSyntheticMedia 필드(2024-10-30 API에
+# 추가됨, videos.insert/update에서 설정 가능)로 업로드 시점에 바로 선언하면
+# 스튜디오에서 나중에 따로 체크할 필요가 없다.
+#
+# ⚠️ 전 채널에 무조건 True를 넣지 않는다 — 유튜브 disclosure 기준은
+# "사실적으로 보이는 인물/장면을 AI로 생성/변경"한 경우에만 해당하고,
+# 단순 TTS 내레이션이나 만화/일러스트 스타일 이미지, 대본 생성 보조 정도는
+# 대상이 아니다(과잉 신고도 정책 위반은 아니지만 불필요한 라벨을 늘릴
+# 이유가 없음). 채널7(일본 시니어 사연, 27/29번 프로젝트 — 사실적인 AI
+# 생성 인물 이미지 + AI 음성 내레이션)만 확실히 해당되는 걸 확인해서
+# True로 등록. 다른 채널도 사실적인 AI 생성 인물/장면을 쓴다면 여기에
+# 추가할 것.
+CHANNEL_SYNTHETIC_MEDIA_MAP = {
+    "7": True,   # 일본 시니어 사연(쇼츠+롱폼) — 사실적 AI 생성 인물 이미지 + AI 내레이션
+}
+
 import os
 import json
 import re
 import tempfile
+import time
 import requests
 import gspread
 from datetime import datetime, timezone, timedelta
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.auth.transport.requests import Request
+
+# 2026-07-26 추가: 챕터/재생목록/고정댓글 자동화 — 각 기능을 별도 파일로 분리
+# (코딩 컨벤션 규칙 1). 이 세 모듈은 전부 "실패해도 업로드 자체는 죽지 않게"
+# 설계되어 있고, upload_to_youtube()/main()에서 항상 try/except로 감싸 호출한다.
+from chapters import build_description_with_chapters
+from playlist_ops import ensure_playlist, add_to_playlist
+from comment_ops import post_comment_candidate
 
 KST = timezone(timedelta(hours=9))
 
@@ -86,6 +126,35 @@ def get_sheet(client, sheet_name):
     return client.open_by_key(GOOGLE_SHEET_ID).worksheet(sheet_name)
 
 
+# 2026-08-16 추가 — 실사용 중 GitHub Actions 실행이
+# "gspread.exceptions.APIError: [503]: The service is currently unavailable."
+# (구글 시트 API 쪽의 일시적 장애 — 우리 코드/OAuth 드라이브 변경과는 무관함)
+# 하나로 전체가 죽어버리는 문제 발견. get_next_video()의 sheet.get_all_values()
+# 호출 시점에서 터졌는데, 그 호출 하나가 예외를 던지면 main()의 for 루프가
+# 통째로 중단돼서 그 뒤에 나오는 다른 시트(다른 채널)들은 아예 시도조차
+# 안 되는 게 더 큰 문제였다(30분마다 도는 자동화라 개별 요청이 가끔
+# 503/500/429로 실패하는 건 정상 범위 — 재시도 없이 그대로 죽게 두면 안 됨).
+def _retry_gspread_call(fn, *args, retries=3, base_delay=5, **kwargs):
+    """일시적인 구글 API 오류(503/500/429)로 보이면 지수 백오프로 재시도한다.
+    그 외 오류(권한 문제 등 재시도해도 똑같이 실패할 오류)는 즉시 그대로
+    올린다."""
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            msg = str(e)
+            transient = any(code in msg for code in ("[503]", "[500]", "[429]"))
+            last_err = e
+            if not transient or attempt >= retries:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            print(f"   ⚠️ 구글 시트 API 일시 오류({e}) — {delay}초 후 재시도 "
+                  f"({attempt}/{retries})")
+            time.sleep(delay)
+    raise last_err
+
+
 def _uploaded_today_for_channel(all_rows, channel_num, today_str):
     """같은 채널로 오늘 이미 업로드 완료된 행이 있는지 확인.
     mark_as_done()이 G열을 '실제 업로드 일시'로 갱신해두기 때문에,
@@ -112,7 +181,7 @@ def get_next_video(sheet):
     """
     now_kst   = datetime.now(KST)
     today_str = now_kst.strftime("%Y-%m-%d")
-    all_rows  = sheet.get_all_values()
+    all_rows  = _retry_gspread_call(sheet.get_all_values)
 
     for i, row in enumerate(all_rows[1:], start=2):
         while len(row) < 7:
@@ -162,30 +231,93 @@ def get_next_video(sheet):
     return None, None, None
 
 
-def mark_as_done(sheet, row_num, video_id):
+def mark_as_done(sheet, row_num, video_id, is_short=True):
     now_kst = datetime.now(KST)
     sheet.update_cell(row_num, 5, "업로드완료")
     # G열을 '실제 업로드된 일시'로 갱신 — 예약이 밀려서 늦게 올라간 경우에도
     # 정확한 실제 업로드 시각을 남겨야 위의 하루 1개 안전장치가 제대로 동작한다.
     sheet.update_cell(row_num, 7, now_kst.strftime("%Y-%m-%d %H:%M"))
-    sheet.update_cell(row_num, 8, f"https://youtube.com/shorts/{video_id}")
+    # 2026-07-25 수정: 예전엔 롱폼이어도 무조건 /shorts/ 링크를 시트에
+    # 기록했음. is_short 판정에 맞춰 링크 형식을 바꾼다(upload_to_youtube 참고).
+    final_url = f"https://youtube.com/shorts/{video_id}" if is_short else f"https://youtu.be/{video_id}"
+    sheet.update_cell(row_num, 8, final_url)
     print(f"✅ 시트 업데이트: {row_num}행 → 업로드완료 (G열 = 실제 업로드 시각 {now_kst.strftime('%Y-%m-%d %H:%M')})")
 
 
 # ──────────────────────────────────────────
-# 영상 다운로드 (젠스파크 or 드롭박스)
+# 영상 다운로드 (젠스파크 or 드롭박스 or 구글드라이브)
 # ──────────────────────────────────────────
+# 2026-08-09 추가 — 29_japan_senior_story_longform이 Dropbox 무료 용량
+# (2GB) 부족 문제로 "구글 드라이브도 업로드 대상으로 고를 수 있게" 요청함
+# (그 프로젝트의 tts_dropbox.upload_to_gdrive() 참고). D열은 그대로 두고
+# (스키마 변경 없음), 값이 Dropbox 링크냐 구글드라이브 링크냐만 URL 패턴으로
+# 구분한다 — 기존 D열=Dropbox 전용이라는 전제였던 곳(예: 다른 시트/
+# genspark_to_dropbox.py 등)은 계속 Dropbox 링크만 넣을 것이므로 영향 없음.
 def download_video(video_url, dropbox_url):
     """
-    D열 드롭박스 URL 있으면 드롭박스 우선
-    없으면 C열 젠스파크 URL 직접 다운로드
+    D열에 구글드라이브 링크가 있으면 구글드라이브
+    D열에 그 외 링크(Dropbox 등)가 있으면 기존 방식(드롭박스 우선)
+    D열이 비어있으면 C열 젠스파크 URL 직접 다운로드
     """
     if dropbox_url:
+        if "drive.google.com" in dropbox_url:
+            print(f"📦 구글 드라이브에서 다운로드...")
+            return download_gdrive(dropbox_url)
         print(f"📦 드롭박스에서 다운로드...")
         return download_url(dropbox_url, is_dropbox=True)
     else:
         print(f"✨ 젠스파크에서 직접 다운로드...")
         return download_url(video_url, is_dropbox=False)
+
+
+def _extract_gdrive_file_id(url):
+    """https://drive.google.com/file/d/<ID>/view... 또는
+    https://drive.google.com/uc?id=<ID>... 형태 둘 다 지원."""
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _get_drive_service():
+    """Sheets 연결에 이미 쓰는 서비스 계정(GOOGLE_SERVICE_ACCOUNT_JSON)을
+    그대로 재사용해 Drive API 클라이언트를 만든다."""
+    creds_dict = json.loads(GOOGLE_SA_JSON)
+    creds = Credentials.from_service_account_info(
+        creds_dict, scopes=["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def download_gdrive(url):
+    """구글드라이브 링크에서 영상을 내려받는다. 익명 공개링크로 그냥
+    requests.get을 하면 대용량 파일에서 구글이 '바이러스 검사를 할 수
+    없습니다' 확인 페이지(HTML)를 대신 돌려줘서 실패하므로, 이미 쓰고 있는
+    서비스 계정으로 인증된 Drive API(files().get_media)를 통해 내려받는다
+    — 인증 API 호출은 그 확인 페이지를 거치지 않는다."""
+    file_id = _extract_gdrive_file_id(url)
+    if not file_id:
+        raise RuntimeError(f"구글 드라이브 URL에서 파일 ID를 추출하지 못했습니다: {url}")
+
+    service = _get_drive_service()
+    request = service.files().get_media(fileId=file_id)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    try:
+        downloader = MediaIoBaseDownload(tmp, request, chunksize=50 * 1024 * 1024)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                print(f"   다운로드 중... {int(status.progress() * 100)}%")
+    finally:
+        tmp.close()
+
+    size = os.path.getsize(tmp.name)
+    print(f"✅ 다운로드 완료: {size / 1024 / 1024:.1f}MB")
+    return tmp.name
 
 
 def download_url(url, is_dropbox=False):
@@ -242,20 +374,100 @@ def get_youtube_service(channel_num="1"):
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_to_youtube(service, video_path, title, description, scheduled="", channel_num="1"):
+def _get_video_duration_seconds(video_path):
+    """ffprobe로 실제 영상 길이(초)를 잰다. ffprobe가 없거나 실패하면 None을
+    반환한다(호출부가 "판정 불가 시 기존 동작 유지"로 안전하게 폴백하기 위함).
+
+    2026-07-25 신설 — 아래 SHORTS_MAX_SECONDS 판정에 쓰인다. GitHub Actions
+    ubuntu-latest 러너에는 ffmpeg/ffprobe가 기본 설치돼 있다."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip())
+    except Exception as e:
+        print(f"   ⚠️ 영상 길이 확인 실패({e}) — 길이 기반 판정을 건너뜁니다")
+        return None
+
+
+# YouTube Shorts 최대 길이(2024-10부터 3분, 2026-07 기준 확인). 약간의
+# 여유(3초)를 둬서 3:00.x 처럼 근소하게 넘는 영상을 실수로 숏츠 취급하지
+# 않게 한다.
+SHORTS_MAX_SECONDS = 183
+
+
+def upload_to_youtube(service, video_path, title, description, scheduled="", channel_num="1",
+                       chapters_raw="", playlist_name="", playlist_description="", pinned_comment="",
+                       contains_synthetic_media=None, sheet_name=""):
     channel_id   = CHANNEL_MAP.get(str(channel_num).strip(), CHANNEL_MAP["1"])
     channel_name = CHANNEL_NAMES.get(str(channel_num).strip(), f"채널{channel_num}")
     print(f"📺 채널: {channel_name} ({channel_id})")
+
+    # 2026-07-25 수정: 지금까지는 영상 길이와 무관하게 무조건 tags에
+    # "shorts"를 넣고 description에 "#shorts"를 붙였음 — 채널7의
+    # 29_japan_senior_story_longform(16분대 장편)에 이 로직이 그대로
+    # 적용되면서, 장편 영상에 "shorts" 태그 + "#shorts" 해시태그가 붙는
+    # 실제 사고가 발생함(조회수가 쇼츠 대비 극단적으로 저조했던 원인 중
+    # 하나로 의심됨). 이제 실제 영상 길이를 재서 3분(SHORTS_MAX_SECONDS)
+    # 이하일 때만 숏츠로 취급한다. 길이 판정이 안 되면(ffprobe 실패 등)
+    # 기존 동작(숏츠로 간주)으로 안전하게 폴백한다 — 판정 불가로 장편에
+    # 실수로 태그를 안 붙이는 것보다야, 원래도 대부분 숏츠였던 채널들
+    # 기준으로는 폴백이 안전한 방향이라 판단.
+    duration = _get_video_duration_seconds(video_path)
+    if duration is not None:
+        is_short = duration <= SHORTS_MAX_SECONDS
+        print(f"   ⏱️ 영상 길이: {duration:.1f}초 → {'숏츠' if is_short else '롱폼'}으로 판정")
+    else:
+        # 2026-08-13 수정: 길이 판정이 안 될 때 예전엔 무조건 "숏츠"로
+        # 폴백했음(대부분 채널이 숏츠 전용이던 시절엔 안전한 선택이었음).
+        # 그런데 채널7은 이제 숏츠(27_japan_senior_story_shorts, 숏츠시트)와
+        # 롱폼(29_japan_senior_story_longform, 일본시니어롱폼시트)을 같은
+        # 채널에 함께 올리므로, 길이 판정 불가 시 무조건 숏츠로 찍으면 롱폼
+        # 시트에서 온 영상에 "shorts" 태그/"#shorts"가 잘못 붙는 사고가 재발할
+        # 수 있다(실제로 반복돼 온 문제). 어느 시트에서 온 행인지(sheet_name)를
+        # 넘겨받으면 그 시트 이름으로 더 안전하게 폴백한다 — sheet_name이
+        # 없거나 "롱폼"을 포함하지 않으면 기존 동작(숏츠로 간주) 그대로 유지.
+        if "롱폼" in sheet_name:
+            is_short = False
+            print(f"   ⚠️ 영상 길이 판정 실패 — 시트명('{sheet_name}'에 '롱폼' 포함)을 "
+                  f"근거로 롱폼으로 폴백")
+        else:
+            is_short = True
+            print(f"   ⚠️ 영상 길이 판정 실패 — 숏츠로 폴백(기존 동작 유지)")
 
     # 해시태그 추출
     tags = []
     for word in description.split():
         if word.startswith("#"):
             tags.append(word.lstrip("#"))
-    if "shorts" not in [t.lower() for t in tags]:
-        tags.insert(0, "shorts")
-    if "#shorts" not in description.lower():
-        description += "\n\n#shorts"
+    if is_short:
+        if "shorts" not in [t.lower() for t in tags]:
+            tags.insert(0, "shorts")
+        if "#shorts" not in description.lower():
+            description += "\n\n#shorts"
+    else:
+        # 롱폼인데 예전에 실수로 붙었던 shorts/#shorts가 (예: 대본에 우연히
+        # 포함되는 등) 섞여 들어오면 걸러낸다.
+        tags = [t for t in tags if t.lower() != "shorts"]
+
+    # 2026-07-26 추가: I열에 챕터 텍스트("0:00 제목 | 1:30 제목2 | ...")가 있으면
+    # 검증 후 설명란 끝에 붙인다. 형식/규칙(0:00 시작, 최소 3개, 10초 이상 간격)을
+    # 어기면 chapters.py가 ValueError를 던지는데, 여기서 잡아서 "챕터 없이 기존
+    # 설명란 그대로 업로드"로 안전하게 폴백한다 — 챕터 문제로 업로드 전체가
+    # 죽으면 안 되기 때문.
+    if chapters_raw.strip():
+        try:
+            description = build_description_with_chapters(description, chapters_raw)
+            print("   [챕터] 설명란에 추가 완료")
+        except ValueError as e:
+            print(f"   ⚠️ 챕터 형식/규칙 오류 — 챕터 없이 업로드 진행: {e}")
+
+    # 2026-07-25 추가: defaultLanguage 채널별 매핑(위 CHANNEL_LANGUAGE_MAP).
+    # 매핑에 없는 채널은 기존과 동일하게 "ko".
+    default_language = CHANNEL_LANGUAGE_MAP.get(str(channel_num).strip(), "ko")
 
     # 공개 상태
     now_kst = datetime.now(KST)
@@ -290,7 +502,8 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
             "description": description[:5000],
             "tags": tags[:500],
             "categoryId": "22",
-            "defaultLanguage": "ko",
+            "defaultLanguage": default_language,
+            "defaultAudioLanguage": default_language,
             "channelId": channel_id,
         },
         "status": {
@@ -300,6 +513,14 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
     }
     if publish_at:
         body["status"]["publishAt"] = publish_at
+
+    # 2026-07-30 추가: AI 사용(사실적 합성/변경 콘텐츠) 공개를 업로드 시점에
+    # API로 바로 선언. None이면(채널 매핑에도 없고 시트 오버라이드도 없으면)
+    # 아예 필드를 안 보내서 기존 동작(유튜브 스튜디오 기본값/자동감지에 맡김)
+    # 그대로 유지 — 잘못된 값을 강제로 넣는 것보다 안전하다.
+    if contains_synthetic_media is not None:
+        body["status"]["containsSyntheticMedia"] = bool(contains_synthetic_media)
+        print(f"   🤖 AI 사용(합성 콘텐츠) 공개: {bool(contains_synthetic_media)}")
 
     media = MediaFileUpload(
         video_path,
@@ -322,8 +543,33 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
             print(f"   {int(status_obj.progress() * 100)}%...")
 
     video_id = response["id"]
-    print(f"✅ 완료! https://youtube.com/shorts/{video_id}")
-    return video_id
+    # 2026-07-25 수정: 링크도 실제 판정(is_short)에 맞춰 /shorts/ 또는
+    # /watch?v= 형태로 출력 — 예전엔 롱폼이어도 무조건 /shorts/ 링크였음.
+    final_url = f"https://youtube.com/shorts/{video_id}" if is_short else f"https://youtu.be/{video_id}"
+    print(f"✅ 완료! {final_url}")
+
+    # 2026-07-26 추가: 재생목록/고정댓글 자동화. 둘 다 영상 업로드 자체가 이미
+    # 끝난 뒤에 실행되므로, 여기서 실패해도(권한 부족 403 등) 업로드 성공
+    # 자체는 절대 되돌리지 않는다 — 경고만 출력하고 넘어간다.
+    if playlist_name.strip():
+        try:
+            playlist_id = ensure_playlist(service, playlist_name.strip(), playlist_description.strip())
+            add_to_playlist(service, playlist_id, video_id)
+        except HttpError as e:
+            print(f"   ⚠️ 재생목록 처리 실패(권한 부족일 수 있음, get_youtube_token.py로 "
+                  f"스코프 재발급 필요할 수 있음): {e}")
+        except Exception as e:
+            print(f"   ⚠️ 재생목록 처리 중 예상치 못한 오류: {e}")
+
+    if pinned_comment.strip():
+        try:
+            post_comment_candidate(service, video_id, pinned_comment.strip())
+        except HttpError as e:
+            print(f"   ⚠️ 댓글 작성 실패(권한 부족일 수 있음): {e}")
+        except Exception as e:
+            print(f"   ⚠️ 댓글 작성 중 예상치 못한 오류: {e}")
+
+    return video_id, is_short
 
 
 # ──────────────────────────────────────────
@@ -348,7 +594,16 @@ def main():
             print(f"   ⚠️ 시트 열기 실패: {e}")
             continue
 
-        row_num, row, scheduled = get_next_video(sheet)
+        # 2026-08-16 추가 — get_all_values() 재시도(_retry_gspread_call)로도
+        # 못 넘긴 지속적인 오류(또는 재시도 대상이 아닌 오류)라면, 이 시트만
+        # 건너뛰고 나머지 시트는 계속 처리한다 — 예전엔 여기서 예외가 나면
+        # main()의 for 루프 전체가 죽어서 뒤에 있는 다른 채널 시트들은
+        # 아예 시도조차 안 됐다.
+        try:
+            row_num, row, scheduled = get_next_video(sheet)
+        except Exception as e:
+            print(f"   ⚠️ {sheet_name} 시트 확인 실패(다음 시트로 계속 진행): {e}")
+            continue
 
         if row is None:
             print("   ⚠️  업로드할 영상 없음 (E열='업로드전' 확인)")
@@ -360,20 +615,69 @@ def main():
         dropbox_url = row[3].strip()   # D열 드롭박스
         channel_num = row[5].strip() if len(row) > 5 else "1"  # F열
 
+        # 2026-07-26 추가, 2026-07-26 컬럼 위치 수정: 처음엔 I/J/K/L열을 썼으나,
+        # 27/28/29번 콘텐츠 생성 프로젝트가 이미 A~N(14열) 스키마를 공유하고
+        # 있다는 게 뒤늦게 확인됨(I=상태, J=수집일시, K=테마ID, L=생성ID —
+        # 전부 이미 다른 용도로 쓰이고 있었음). 그 상태로 뒀다면 예를 들어
+        # L열(생성ID, "20260726153045" 같은 숫자 문자열)이 "고정 댓글 문구"로
+        # 그대로 읽혀서 실제 영상에 의미 없는 숫자 댓글이 자동으로 달릴
+        # 뻔했다 — 실사고로 이어지기 전에 발견해서 기존 스키마와 절대
+        # 겹치지 않는 O/P/Q/R(15~18번째 열)로 옮김. O/P/Q/R은 전부 선택
+        # 입력(없으면 기존과 100% 동일하게 동작 — 챕터/재생목록/댓글 기능
+        # 자체를 건너뜀). 기존 A~N열 구조는 전혀 건드리지 않아 A~H만 쓰는
+        # 단순 시트(genspark_to_dropbox.py, youtube_manager_ui.py 등)와
+        # A~N을 쓰는 29번 같은 시트 모두 수정 없이 그대로 호환된다.
+        #
+        # ⚠️ 29번 프로젝트는 챕터를 이 O열이 아니라 B열(설명란)에 직접
+        # 이어붙이는 별도 메커니즘(storage.append_chapters_to_sheet_description)을
+        # 이미 쓰고 있으므로, 29번 시트에서는 O열이 항상 비어있는 게 정상이다
+        # — 그래도 chapters_raw가 비어있으면 조용히 건너뛰므로 문제없다.
+        chapters_raw         = row[14].strip() if len(row) > 14 else ""  # O열: "0:00 제목 | 1:30 제목2 | ..."
+        playlist_name        = row[15].strip() if len(row) > 15 else ""  # P열: 재생목록 이름
+        playlist_description = row[16].strip() if len(row) > 16 else ""  # Q열: 재생목록 설명
+        pinned_comment       = row[17].strip() if len(row) > 17 else ""  # R열: 고정 댓글용 문구
+
+        # 2026-07-30 추가: S열은 "이 영상 하나만" AI 공개 여부를 채널 기본값과
+        # 다르게 강제하고 싶을 때만 쓰는 선택 오버라이드. 비어있으면(대부분의
+        # 경우) 아래에서 CHANNEL_SYNTHETIC_MEDIA_MAP의 채널 기본값을 그대로 씀.
+        synthetic_override_raw = row[18].strip().lower() if len(row) > 18 else ""  # S열: true/false, 비우면 채널 기본값
+        if synthetic_override_raw in ("true", "1", "yes", "예"):
+            contains_synthetic_media = True
+        elif synthetic_override_raw in ("false", "0", "no", "아니요"):
+            contains_synthetic_media = False
+        else:
+            contains_synthetic_media = CHANNEL_SYNTHETIC_MEDIA_MAP.get(str(channel_num).strip())
+
         print(f"\n📋 업로드 정보:")
         print(f"   제목: {title}")
         print(f"   채널: {CHANNEL_NAMES.get(channel_num, channel_num)}")
-        print(f"   소스: {'드롭박스' if dropbox_url else '젠스파크 직접'}")
+        if dropbox_url and "drive.google.com" in dropbox_url:
+            _source_label = "구글드라이브"
+        elif dropbox_url:
+            _source_label = "드롭박스"
+        else:
+            _source_label = "젠스파크 직접"
+        print(f"   소스: {_source_label}")
         print(f"   예약: {scheduled if scheduled else '즉시공개'}")
+        print(f"   챕터(O열): {'있음' if chapters_raw else '없음(29번처럼 B열에 직접 포함됐을 수 있음)'}")
+        print(f"   재생목록(P열): {playlist_name if playlist_name else '없음(P열 비어있음)'}")
+        print(f"   고정댓글(R열): {'있음' if pinned_comment else '없음(R열 비어있음)'}")
+        print(f"   AI 사용 공개(S열/채널기본값): {contains_synthetic_media if contains_synthetic_media is not None else '미지정(스튜디오 기본값/자동감지에 맡김)'}")
 
         local_path = download_video(video_url, dropbox_url)
 
         try:
             yt_service = get_youtube_service(channel_num)
-            video_id = upload_to_youtube(
-                yt_service, local_path, title, script, scheduled, channel_num
+            video_id, is_short = upload_to_youtube(
+                yt_service, local_path, title, script, scheduled, channel_num,
+                chapters_raw=chapters_raw,
+                playlist_name=playlist_name,
+                playlist_description=playlist_description,
+                pinned_comment=pinned_comment,
+                contains_synthetic_media=contains_synthetic_media,
+                sheet_name=sheet_name,
             )
-            mark_as_done(sheet, row_num, video_id)
+            mark_as_done(sheet, row_num, video_id, is_short)
             print(f"\n🎉 [{sheet_name}] 완료!")
         finally:
             if os.path.exists(local_path):
