@@ -664,7 +664,27 @@ def main():
         print(f"   고정댓글(R열): {'있음' if pinned_comment else '없음(R열 비어있음)'}")
         print(f"   AI 사용 공개(S열/채널기본값): {contains_synthetic_media if contains_synthetic_media is not None else '미지정(스튜디오 기본값/자동감지에 맡김)'}")
 
-        local_path = download_video(video_url, dropbox_url)
+        # 2026-08-23 추가 — 사용자 리포트: 같은 영상이 하루에 3~4번씩
+        # 중복 업로드됨(그중 2건은 "처리 중단됨"). 원인: get_next_video()가
+        # 행을 고른 시점부터 mark_as_done()으로 E열이 "업로드완료"로 바뀌는
+        # 시점 사이에 다운로드+업로드하는 시간(긴 영상은 30분 스케줄
+        # 주기보다 오래 걸릴 수 있음)이 걸리는데, 그 사이에 겹쳐서 실행된
+        # 다른 실행이 같은 행을 또 "업로드전"으로 보고 집어버림. 워크플로
+        # 차원의 근본 해결(auto_upload.yml의 concurrency 설정)과 별개로,
+        # 여기서도 다운로드 시작 전에 바로 E열을 "업로드중"으로 찜해서
+        # (get_next_video()는 정확히 "업로드전"인 행만 고르므로 "업로드중"은
+        # 자동으로 건너뛰어짐) concurrency로 못 막는 경우(예: 사람이 로컬
+        # 에서 upload.py를 직접 실행)에도 중복 픽업을 막는다. 다운로드/
+        # 업로드가 실패하면 except에서 "업로드전"으로 되돌려서 다음 실행
+        # 때 정상적으로 재시도되게 한다("업로드중"에 영영 갇히는 것 방지).
+        sheet.update_cell(row_num, 5, "업로드중")
+
+        try:
+            local_path = download_video(video_url, dropbox_url)
+        except Exception as e:
+            sheet.update_cell(row_num, 5, "업로드전")
+            print(f"   ❌ [{sheet_name}] 다운로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
+            continue
 
         try:
             yt_service = get_youtube_service(channel_num)
@@ -679,6 +699,9 @@ def main():
             )
             mark_as_done(sheet, row_num, video_id, is_short)
             print(f"\n🎉 [{sheet_name}] 완료!")
+        except Exception as e:
+            sheet.update_cell(row_num, 5, "업로드전")
+            print(f"   ❌ [{sheet_name}] 업로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
         finally:
             if os.path.exists(local_path):
                 os.remove(local_path)

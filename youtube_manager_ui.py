@@ -34,6 +34,33 @@ CHANNEL_MAP = {
 STATUS_COLOR = {"기록전": "#f59e0b", "업로드전": "#3b82f6", "업로드완료": "#22c55e"}
 CONFIG_PATH  = Path(__file__).parent / "config.json"
 
+# 2026-08-13 추가 — upload.py(자동화 크론)는 2026-07-25부터 영상 실제 길이를
+# 재서 3분 이하일 때만 "숏츠"로 판정하는데, 이 파일의 "⚡ 즉시 업로드" 탭
+# (_now_full_upload)은 그 로직이 생기기 전 버전 그대로 남아있어서 길이와
+# 무관하게 무조건 tags=["shorts", ...] + "#shorts"를 붙이고 있었다. 이
+# 화면으로 롱폼 영상을 올리면 그대로 잘못된 shorts 태그가 붙는 실사고로
+# 이어지므로, upload.py와 동일한 기준(SHORTS_MAX_SECONDS/ffprobe)을 여기에도
+# 둔다 — upload.py를 통째로 import하면 그 파일 상단이 GOOGLE_SHEET_ID 등
+# 필수 환경변수를 os.environ[...]으로 즉시 읽어서, 이 데스크톱 앱처럼 그
+# 환경변수가 없는 로컬 실행에서는 import 시점에 바로 죽는다 — 그래서 안전하게
+# 판정 로직만 그대로 복사해 둔다(두 곳이 갈라지지 않도록 값도 동일하게 유지).
+SHORTS_MAX_SECONDS = 183
+
+
+def _get_video_duration_seconds(video_path):
+    """ffprobe로 실제 영상 길이(초)를 잰다. 실패하면 None(호출부가 안전하게
+    폴백)."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return None
+
 # ───────────────────────────────────────────────
 # 색상 팔레트
 # ───────────────────────────────────────────────
@@ -1024,10 +1051,27 @@ class App(tk.Tk):
                     f_desc = desc
                     tags = [w.lstrip("#") for w in f_desc.split()
                             if w.startswith("#")]
-                    if "shorts" not in [t.lower() for t in tags]:
-                        tags.insert(0, "shorts")
-                    if "#shorts" not in f_desc.lower():
-                        f_desc += "\n\n#shorts"
+
+                    # 2026-08-13 수정: 무조건 "shorts"를 붙이던 걸 upload.py와
+                    # 같은 방식(실제 영상 길이 판정)으로 바꿨다 — 롱폼 영상을
+                    # 이 탭으로 올릴 때 잘못된 shorts 태그/해시태그가 붙는
+                    # 문제를 막기 위함. 길이 판정이 안 되면(ffprobe 실패 등)
+                    # 기존처럼 숏츠로 폴백한다(이 탭은 원래 숏츠 채널 위주
+                    # 수동 업로드 용도로 쓰여왔으므로).
+                    duration = _get_video_duration_seconds(fp)
+                    is_short = True if duration is None else duration <= SHORTS_MAX_SECONDS
+                    if duration is not None:
+                        self._log(self._log_now,
+                                   f"  ⏱️ 영상 길이: {duration:.1f}초 → "
+                                   f"{'숏츠' if is_short else '롱폼'}으로 판정")
+
+                    if is_short:
+                        if "shorts" not in [t.lower() for t in tags]:
+                            tags.insert(0, "shorts")
+                        if "#shorts" not in f_desc.lower():
+                            f_desc += "\n\n#shorts"
+                    else:
+                        tags = [t for t in tags if t.lower() != "shorts"]
 
                     body = {
                         "snippet": {
@@ -1054,7 +1098,9 @@ class App(tk.Tk):
                             pct = int(s_obj.progress() * 100)
                             self._log(self._log_now, f"  ⬆️  {pct}%")
                     vid = resp["id"]
-                    yt_url = f"https://youtube.com/shorts/{vid}"
+                    # 2026-08-13 수정: 롱폼이어도 무조건 /shorts/ 링크였던 것을
+                    # 위에서 판정한 is_short에 맞춰 실제 형식으로 바꿈.
+                    yt_url = f"https://youtube.com/shorts/{vid}" if is_short else f"https://youtu.be/{vid}"
                     self._log(self._log_now, f"  ✅ 완료: {yt_url}")
                     uploaded.append((fp, dl_url, yt_url, f_title))
 

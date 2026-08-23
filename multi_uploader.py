@@ -113,12 +113,16 @@ class MultiUploader:
         if self.platform_config["youtube"] and youtube_service:
             try:
                 from upload import upload_to_youtube  # 기존 함수 재사용
-                video_id = upload_to_youtube(
+                # 2026-07-25: upload_to_youtube()가 이제 (video_id, is_short)
+                # 튜플을 반환하도록 바뀜(영상 길이 기반 숏츠 판정 추가 — upload.py
+                # 참고). 링크 형식도 그에 맞춰 표시한다.
+                video_id, is_short = upload_to_youtube(
                     youtube_service, video_path, title,
                     description, scheduled, self.channel_num
                 )
                 results["youtube"] = video_id
-                print(f"✅ YouTube 완료: https://youtube.com/shorts/{video_id}")
+                final_url = f"https://youtube.com/shorts/{video_id}" if is_short else f"https://youtu.be/{video_id}"
+                print(f"✅ YouTube 완료: {final_url}")
             except Exception as e:
                 print(f"❌ YouTube 실패: {e}")
 
