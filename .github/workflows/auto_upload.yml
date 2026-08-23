@@ -4,7 +4,11 @@ on:
   schedule:
     - cron: "0,30 * * * *"
   workflow_dispatch:
-
+  
+concurrency:
+  group: youtube-auto-upload
+  cancel-in-progress: false
+  
 jobs:
   upload:
     runs-on: ubuntu-latest
