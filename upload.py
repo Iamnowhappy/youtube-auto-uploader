@@ -21,7 +21,17 @@ CHANNEL_MAP = {
     "6": "UCw8ETbGpdnXc8NJpdgmwrqw",   # 데일리AI브리핑
     "7": "UCAdzqsKoItMWxKmhoC8aSrg",   # Healthier Living Today
     "8": "UCjdqO74OEmNt9EL4H33VWUQ",   # Talk To Me In Korean
-    "9": "UCQ7JqaT39C1IuDelJcNVI1Q",   # GlobalTopTier
+    # 2026-08-28 정정 — 이전 세션 메모(29_japan_senior_story_longform 40차)는
+    # 채널9=GlobalTopTier(리브랜딩 예정)로 잘못 기록돼 있었다. 실제로 미국
+    # 시니어 채널로 쓰기로 확정한 건 GlobalTopTier가 아니라 "Curious Facts"
+    # 브랜드 계정이었고, 이미 유튜브 스튜디오에서 "Quiet Fortune"으로
+    # 개명까지 끝난 상태였다(사용자가 Cowork 세션에서 채널 목록 스크린샷으로
+    # 직접 확인해줌). GlobalTopTier는 이 프로젝트와 무관한 별개 채널이다 —
+    # OAuth 토큰(YOUTUBE_TOKEN_JSON_CH9)도 이번에 Curious Facts 계정으로
+    # 다시 발급받아 GitHub 시크릿을 교체했다. 채널ID는 사용자가 보여준
+    # YouTube Studio 채널 콘텐츠 페이지 URL
+    # (studio.youtube.com/channel/UCWULpFJH9gvGvprOli7rwiw/...)에서 확인.
+    "9": "UCWULpFJH9gvGvprOli7rwiw",   # Quiet Fortune (구 Curious Facts, 미국 시니어 채널)
 }
 
 CHANNEL_NAMES = {
@@ -33,7 +43,7 @@ CHANNEL_NAMES = {
     "6": "데일리AI브리핑",
     "7": "HealthierLivingToday",
     "8": "TalkToMeInKorean",
-    "9": "GlobalTopTier",
+    "9": "QuietFortune",
 }
 
 # 2026-07-25 추가: defaultLanguage가 지금까지 전 채널 "ko"로 하드코딩돼
@@ -45,6 +55,7 @@ CHANNEL_NAMES = {
 # 채널만 여기 추가할 것.
 CHANNEL_LANGUAGE_MAP = {
     "7": "ja",   # 일본 시니어 사연(쇼츠+롱폼) — 대본이 전부 일본어
+    "9": "en",   # 2026-08-28 추가 — 미국 시니어 사연(Quiet Fortune, 쇼츠+롱폼) — 대본이 전부 영어
 }
 
 # 2026-07-30 추가: 유튜브 스튜디오에서 "AI 사용" 공개 질문(실제 인물처럼
@@ -65,6 +76,20 @@ CHANNEL_LANGUAGE_MAP = {
 # 추가할 것.
 CHANNEL_SYNTHETIC_MEDIA_MAP = {
     "7": True,   # 일본 시니어 사연(쇼츠+롱폼) — 사실적 AI 생성 인물 이미지 + AI 내레이션
+    "9": True,   # 2026-08-28 추가 — 미국 시니어 사연(Quiet Fortune, 쇼츠+롱폼) — 채널7과 동일한 이유(사실적 AI 생성 인물 이미지 + AI 내레이션)
+}
+
+# 2026-08-29 추가 — 사용자 요청: "아.. 영어 시니어만 구독피드게시 구독자
+# 알림전송을 꺼야 되는데...." (YouTube 스튜디오 업로드 화면의 '구독 피드에
+# 게시하고 구독자에게 알림 전송' 체크박스와 동일한 설정 — YouTube Data API
+# videos.insert()의 notifySubscribers 쿼리 파라미터, 기본값 True).
+# 채널9(Quiet Fortune, 미국 시니어)만 False로 꺼서 업로드하고, 나머지
+# 채널은 지금까지처럼 기본 True(=구독자에게 알림 전송, 기존 동작 100%
+# 유지)로 둔다. 왜 채널9만 끄는지는 사용자 판단 영역이라 여기선 그대로
+# 반영만 함 — 매핑에 없는 채널은 True로 폴백(안전한 기본값, 새 채널
+# 추가돼도 실수로 알림이 꺼지는 일 없음).
+CHANNEL_NOTIFY_SUBSCRIBERS_MAP = {
+    "9": False,  # 미국 시니어(Quiet Fortune) — 구독 피드 게시/알림 끔
 }
 
 import os
@@ -529,11 +554,17 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
         chunksize=1024 * 1024 * 5
     )
 
+    # 2026-08-29 추가 — 위 CHANNEL_NOTIFY_SUBSCRIBERS_MAP 참고. notifySubscribers는
+    # body(snippet/status)가 아니라 insert() 메서드 자체의 쿼리 파라미터다.
+    notify_subscribers = CHANNEL_NOTIFY_SUBSCRIBERS_MAP.get(str(channel_num).strip(), True)
+    print(f"   🔔 구독자 알림 전송: {notify_subscribers}")
+
     print(f"🎬 업로드: {title}")
     request = service.videos().insert(
         part="snippet,status",
         body=body,
-        media_body=media
+        media_body=media,
+        notifySubscribers=notify_subscribers,
     )
 
     response = None
