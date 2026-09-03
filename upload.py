@@ -5,7 +5,7 @@ YouTube 자동 업로드 스크립트 v5
 - D열 dropbox_url 있으면 드롭박스 사용, 없으면 C열 젠스파크 URL 사용
 - F열 채널 번호로 채널 선택 (1=모먼트랩, 2=데일리인사이트, 3=생활정보TV)
 - G열 예약날짜 있으면 예약공개, 없으면 즉시공개
-- 채널별 전용 토큰 지원 (YOUTUBE_TOKEN_JSON_CH1 ~ CH9)
+- 채널별 전용 토큰 지원 (YOUTUBE_TOKEN_JSON_CH1 ~ CH10)
 - 여러 시트(숏츠시트, 카툰썰시트 등) 순회 지원
 """
 
@@ -32,6 +32,14 @@ CHANNEL_MAP = {
     # YouTube Studio 채널 콘텐츠 페이지 URL
     # (studio.youtube.com/channel/UCWULpFJH9gvGvprOli7rwiw/...)에서 확인.
     "9": "UCWULpFJH9gvGvprOli7rwiw",   # Quiet Fortune (구 Curious Facts, 미국 시니어 채널)
+    # 2026-09-08 추가 — GlobalTopTier(구 "Top 10 세계 미녀" 콘텐츠, 2024년 이후
+    # 방치돼 있던 채널, 구독자 12명)를 사주/육효 채널 "천명연구소"로 리브랜딩해서
+    # 신규 등록. 1~9번 어디에도 걸리지 않는 완전히 별개 채널임을 채널 ID
+    # 대조로 확인 완료(위 9개 ID와 전부 다름). 채널 ID는 YouTube Studio
+    # 채널 콘텐츠 페이지 URL(studio.youtube.com/channel/UCQ7JqaT39C1luDelJcNVI1Q/...)
+    # 에서 확인. 토큰(YOUTUBE_TOKEN_JSON_CH10)은 아직 발급 전 — get_youtube_token.py 10
+    # 으로 GlobalTopTier를 관리하는 구글 계정으로 로그인해서 발급 필요.
+    "10": "UCQ7JqaT39C1luDelJcNVI1Q",  # 천명연구소 (구 GlobalTopTier, 사주/육효 채널)
 }
 
 CHANNEL_NAMES = {
@@ -44,6 +52,7 @@ CHANNEL_NAMES = {
     "7": "HealthierLivingToday",
     "8": "TalkToMeInKorean",
     "9": "QuietFortune",
+    "10": "CheonmyeongLab",  # 천명연구소
 }
 
 # 2026-07-25 추가: defaultLanguage가 지금까지 전 채널 "ko"로 하드코딩돼
