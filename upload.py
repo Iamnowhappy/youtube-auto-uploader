@@ -39,7 +39,11 @@ CHANNEL_MAP = {
     # 채널 콘텐츠 페이지 URL(studio.youtube.com/channel/UCQ7JqaT39C1luDelJcNVI1Q/...)
     # 에서 확인. 토큰(YOUTUBE_TOKEN_JSON_CH10)은 아직 발급 전 — get_youtube_token.py 10
     # 으로 GlobalTopTier를 관리하는 구글 계정으로 로그인해서 발급 필요.
-    "10": "UCQ7JqaT39C1luDelJcNVI1Q",  # 천명연구소 (구 GlobalTopTier, 사주/육효 채널)
+    # 2026-09-04 정정: verify_token_channel.py로 실제 CH10 OAuth 토큰을
+    # YouTube API(channels.list mine=True)에 직접 조회한 결과 실제 채널ID는
+    # 대문자 I(UCQ7JqaT39C1IuDelJcNVI1Q)였음. 예전에 "소문자 l이 맞다"고
+    # 추정만 하고 고친 게 오히려 틀렸던 것 — 이번엔 API로 직접 검증함.
+    "10": "UCQ7JqaT39C1IuDelJcNVI1Q",  # 천명연구소 (구 GlobalTopTier, 사주/육효 채널)
 }
 
 CHANNEL_NAMES = {
