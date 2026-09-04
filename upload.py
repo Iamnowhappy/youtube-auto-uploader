@@ -98,7 +98,8 @@ CHANNEL_SYNTHETIC_MEDIA_MAP = {
 # 반영만 함 — 매핑에 없는 채널은 True로 폴백(안전한 기본값, 새 채널
 # 추가돼도 실수로 알림이 꺼지는 일 없음).
 CHANNEL_NOTIFY_SUBSCRIBERS_MAP = {
-    "9": False,  # 미국 시니어(Quiet Fortune) — 구독 피드 게시/알림 끔
+    "9": False,   # 미국 시니어(Quiet Fortune) — 구독 피드 게시/알림 끔
+    "10": False,  # 2026-09-04 추가 — 천명연구소(사주/육효) — 구독 피드 게시/알림 끔
 }
 
 import os

@@ -41,4 +41,5 @@ jobs:
           YOUTUBE_TOKEN_JSON_CH7: ${{ secrets.YOUTUBE_TOKEN_JSON_CH7 }}
           YOUTUBE_TOKEN_JSON_CH8: ${{ secrets.YOUTUBE_TOKEN_JSON_CH8 }}
           YOUTUBE_TOKEN_JSON_CH9: ${{ secrets.YOUTUBE_TOKEN_JSON_CH9 }}
+          YOUTUBE_TOKEN_JSON_CH10: ${{ secrets.YOUTUBE_TOKEN_JSON_CH10 }}
         run: python upload.py
