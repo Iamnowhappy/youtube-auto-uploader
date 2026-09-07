@@ -90,6 +90,7 @@ CHANNEL_LANGUAGE_MAP = {
 CHANNEL_SYNTHETIC_MEDIA_MAP = {
     "7": True,   # 일본 시니어 사연(쇼츠+롱폼) — 사실적 AI 생성 인물 이미지 + AI 내레이션
     "9": True,   # 2026-08-28 추가 — 미국 시니어 사연(Quiet Fortune, 쇼츠+롱폼) — 채널7과 동일한 이유(사실적 AI 생성 인물 이미지 + AI 내레이션)
+    "10": True,  # 2026-09-04 추가 — 천명연구소(사주/육효) — 사용자 요청으로 AI 사용 공개 True
 }
 
 # 2026-08-29 추가 — 사용자 요청: "아.. 영어 시니어만 구독피드게시 구독자
@@ -105,6 +106,30 @@ CHANNEL_NOTIFY_SUBSCRIBERS_MAP = {
     "9": False,   # 미국 시니어(Quiet Fortune) — 구독 피드 게시/알림 끔
     "10": False,  # 2026-09-04 추가 — 천명연구소(사주/육효) — 구독 피드 게시/알림 끔
 }
+
+# 2026-09-06 추가, 2026-09-06(2차) 범위 축소 — 사용자 요청: 크몽 사주
+# 리포트 상품 홍보 고정댓글을 자동 게시. 처음엔 "전 채널 공통 + 일본/미국
+# 시니어 채널만 제외" 방식이었으나, 채널4/5(오늘의회사썰/행복시니어TV)처럼
+# 사주와 무관한 채널에까지 이 광고가 붙는 게 안 맞다는 지적 + 댓글 자동화를
+# 쓰려면 채널별 OAuth 토큰을 youtube.force-ssl 스코프로 전부 재발급해야
+# 하는 부담(get_youtube_token.py 참고) 때문에, "필요한 채널만 직접 등록"하는
+# 화이트리스트 방식으로 전환. 지금은 채널10(천명연구소, 사주 콘텐츠 본진)만
+# 등록돼 있음 — 다른 채널에도 각자에게 맞는 홍보 문구로 쓰고 싶으면 이
+# 세트에 채널 번호를 추가할 것(문구가 다르면 DEFAULT_PINNED_COMMENT를
+# 채널별 dict로 바꿔야 함). 단, YouTube Data API에는 댓글 "고정(pin)"
+# 엔드포인트가 없어(comment_ops.py 상단 설명 참고) 이 문구는 "작성"까지만
+# 자동화되고, 실제 상단 고정은 매번 스튜디오에서 수동으로 눌러야 한다.
+# R열에 값이 있으면 이 기본값보다 항상 우선한다.
+CHANNEL_PINNED_COMMENT_DEFAULT_CHANNELS = {"10"}
+DEFAULT_PINNED_COMMENT = """사주는 정해진 운명이 아니라, 내 삶의 지도입니다. 인터넷의 뻔한 풀이가 아닌, 당신만을 위해 정밀 분석한 30페이지 분량의 상세 사주 리포트를 받아보세요. 지금 아래 고정 댓글의 크몽 링크를 클릭하시면 바로 신청 가능합니다.
+
+정식 출시가 22,000원 상품을 🌟선착순 얼리버드 5,000원🌟에 한정 제공합니다.
+
+하루 딱 5명만 수동 정밀 검수로 제작하는 리포트라, 이 기간 놓치면 정가로 돌아갑니다.
+올해 나에게 찾아올 진짜 기회와 대운의 흐름을 단돈 5,000원에 확인해 보세요! 👇
+
+내 사주 완벽 분석 리포트 신청하기 (크몽 안전 결제)
+👉 https://kmong.com/gig/784633"""
 
 import os
 import json
@@ -440,7 +465,7 @@ SHORTS_MAX_SECONDS = 183
 
 def upload_to_youtube(service, video_path, title, description, scheduled="", channel_num="1",
                        chapters_raw="", playlist_name="", playlist_description="", pinned_comment="",
-                       contains_synthetic_media=None, sheet_name=""):
+                       contains_synthetic_media=None, sheet_name="", sheet=None, row_num=None):
     channel_id   = CHANNEL_MAP.get(str(channel_num).strip(), CHANNEL_MAP["1"])
     channel_name = CHANNEL_NAMES.get(str(channel_num).strip(), f"채널{channel_num}")
     print(f"📺 채널: {channel_name} ({channel_id})")
@@ -609,6 +634,16 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
     if pinned_comment.strip():
         try:
             post_comment_candidate(service, video_id, pinned_comment.strip())
+            # 2026-09-06 추가 — 사용자가 R열이 채널별 기본값으로 채워져도
+            # 시트엔 아무 것도 안 보여서 "진짜 됐는지" 확인할 방법이 없다고
+            # 지적함. R열이 원래 비어있던 채널10 영상도 댓글이 실제로
+            # 게시된 뒤엔 그 문구를 R열에 그대로 다시 써서, 시트만 봐도
+            # "댓글이 실제로 달렸다"는 걸 확인할 수 있게 함(실패하면 아래
+            # except로 빠지므로 이 줄까지 오지 않아 R열은 계속 비어있는 채로
+            # 남는다 — 즉 R열에 값이 있으면 성공, 없으면 실패/미시도라는
+            # 뜻이 됨).
+            if sheet is not None and row_num is not None:
+                sheet.update_cell(row_num, 18, pinned_comment.strip())
         except HttpError as e:
             print(f"   ⚠️ 댓글 작성 실패(권한 부족일 수 있음): {e}")
         except Exception as e:
@@ -682,6 +717,13 @@ def main():
         playlist_description = row[16].strip() if len(row) > 16 else ""  # Q열: 재생목록 설명
         pinned_comment       = row[17].strip() if len(row) > 17 else ""  # R열: 고정 댓글용 문구
 
+        # 2026-09-06 추가: R열이 비어있으면(대부분의 경우) 전 채널 공통
+        # 홍보 고정댓글로 자동 채움. 시트에 값이 이미 있으면(예: 29번
+        # 시트처럼 영상별로 다르게 쓰고 싶은 경우) 그 값이 항상 우선한다
+        # — 기본값은 시트가 비어있을 때만 적용.
+        if not pinned_comment and channel_num in CHANNEL_PINNED_COMMENT_DEFAULT_CHANNELS:
+            pinned_comment = DEFAULT_PINNED_COMMENT
+
         # 2026-07-30 추가: S열은 "이 영상 하나만" AI 공개 여부를 채널 기본값과
         # 다르게 강제하고 싶을 때만 쓰는 선택 오버라이드. 비어있으면(대부분의
         # 경우) 아래에서 CHANNEL_SYNTHETIC_MEDIA_MAP의 채널 기본값을 그대로 씀.
@@ -727,8 +769,22 @@ def main():
         try:
             local_path = download_video(video_url, dropbox_url)
         except Exception as e:
-            sheet.update_cell(row_num, 5, "업로드전")
-            print(f"   ❌ [{sheet_name}] 다운로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
+            # 2026-09-07 추가 — 구글드라이브 파일이 실제로 삭제된 경우(404
+            # File not found)는 재시도해도 절대 성공할 수 없는데, 예전
+            # 코드는 무조건 "업로드전"으로 되돌려서 이런 행이 실행할 때마다
+            # 영원히 똑같이 실패하는 걸 눈치채기 어려웠다(로그만 스쳐 지나감).
+            # 404는 사람이 손대야 하는 영구 실패로 보고 별도 상태로 멈춰서
+            # get_next_video()가 더 이상 집어가지 않게 한다.
+            is_permanent_404 = isinstance(e, HttpError) and getattr(getattr(e, "resp", None), "status", None) == 404
+            if not is_permanent_404:
+                is_permanent_404 = "File not found" in str(e) or " 404 " in str(e)
+            if is_permanent_404:
+                sheet.update_cell(row_num, 5, "업로드실패(파일없음)")
+                print(f"   ❌ [{sheet_name}] 다운로드 실패 — 원본 파일이 삭제된 것으로 보임(404). "
+                      f"'업로드실패(파일없음)'으로 표시하고 건너뜀(재시도 안 함): {e}")
+            else:
+                sheet.update_cell(row_num, 5, "업로드전")
+                print(f"   ❌ [{sheet_name}] 다운로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
             continue
 
         try:
@@ -741,6 +797,8 @@ def main():
                 pinned_comment=pinned_comment,
                 contains_synthetic_media=contains_synthetic_media,
                 sheet_name=sheet_name,
+                sheet=sheet,
+                row_num=row_num,
             )
             mark_as_done(sheet, row_num, video_id, is_short)
             print(f"\n🎉 [{sheet_name}] 완료!")

@@ -1,0 +1,7 @@
+5_youtube_auto_uploader 폴더에서 python get_youtube_token.py 9 다시 실행
+브라우저 로그인 화면에서 이번엔 GlobalTopTier(Quiet Fortune) 채널을 관리하는 계정을 정확히 선택
+새로 생성된 youtube_token_ch9.json 내용 전체를 복사해서, 방금 보여주신 화면에서 YOUTUBE_TOKEN_JSON_CH9 옆 연필 아이콘 눌러 값을 통째로 교체
+
+GitHub 저장소(Iamnowhappy/youtube-auto-uploader) → Settings → Secrets and variables → Actions에서 YOUTUBE_TOKEN_JSON_CH9 시크릿을 만들거나 값을 갱신하세요. 값은 로컬 5_youtube_auto_uploader/youtube_token_ch9.json 파일 내용(token/refresh_token/client_id/client_secret 전체)을 그대로 복사해서 붙여넣으면 됩니다.
+
+그리고 이미 잘못 올라간 이 영상("A Millionaire Senior Retires...")은 데일리AI브리핑 채널에서 직접 삭제(또는 비공개)하시고, 시트 3행의 D/E/G/H열을 비워두면 다음 자동 실행 때 (시크릿을 고친 뒤) 채널 9로 다시 정확히 올라갑니다.

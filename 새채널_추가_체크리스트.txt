@@ -1,0 +1,72 @@
+새 유튜브 채널 추가할 때 체크리스트
+(2026-09-04, CH10/천명연구소 삽질하면서 정리)
+
+※ 핵심: 2_Syoutube_movieAuto(영상제작 GUI)와 5_youtube_auto_uploader
+  (자동업로드, GitHub Actions)는 완전히 독립된 두 시스템이라 채널 정보를
+  "따로따로" 등록해야 함. 한쪽만 하면 반쪽짜리 작동함.
+
+
+[A] Google 계정/OAuth 토큰 발급 (로컬 PC, 1회)
+──────────────────────────────────────────
+□ 1. C:\Projects\5_youtube_auto_uploader 폴더에서:
+     python get_youtube_token.py {채널번호}
+     → 브라우저 열리면 그 채널을 "관리하는" 구글 계정으로 로그인
+     → youtube_token_ch{채널번호}.json 파일 생성됨
+
+
+[B] GitHub — 5_youtube_auto_uploader 저장소
+──────────────────────────────────────────
+□ 2. Settings → Secrets and variables → Actions → New repository secret
+     이름: YOUTUBE_TOKEN_JSON_CH{채널번호}
+     값: 방금 생성된 json 파일 내용 전체
+
+□ 3. ⚠️ 제일 자주 빠뜨리는 곳!
+     .github/workflows/auto_upload.yml 의 env: 목록에 한 줄 추가:
+       YOUTUBE_TOKEN_JSON_CH{채널번호}: ${{ secrets.YOUTUBE_TOKEN_JSON_CH{채널번호} }}
+     → 2번만 하고 이걸 안 하면, 시크릿은 있는데 워크플로우가 절대
+       읽어가질 못해서 계속 "없음 → 기본 토큰 사용"으로 폴백되고
+       엉뚱한 채널로 업로드됨 (이번에 실제로 겪은 버그)
+
+□ 4. upload.py 의 CHANNEL_MAP 에 채널ID 추가
+       "{채널번호}": "UC...",  # 채널이름
+     (채널ID는 유튜브 스튜디오 → 채널 콘텐츠 페이지 URL에서 확인)
+
+□ 5. upload.py 의 CHANNEL_NAMES 에 채널이름 추가
+       "{채널번호}": "채널이름",
+
+□ 6. (해당되는 경우만) CHANNEL_SYNTHETIC_MEDIA_MAP
+     사실적인 AI 생성 인물/장면 + AI 음성을 쓰는 채널이면 True 추가
+     (단순 TTS 내레이션이나 웹툰/일러스트 스타일이면 해당 없음)
+
+□ 7. (선택) CHANNEL_NOTIFY_SUBSCRIBERS_MAP
+     구독자에게 업로드 알림 안 보내고 싶으면 "{채널번호}": False 추가
+     (기본값은 True = 알림 감, 안 건드리면 그대로 알림 감)
+
+
+[C] Google 스프레드시트 ("젠스파크 관리시트")
+──────────────────────────────────────────
+□ 8. 새 시트 탭 생성 (기존 탭 복사해서 헤더 구조 그대로 유지:
+     제목/설명란/영상URL/DropboxURL/업로드여부/채널번호/예약날짜/
+     유튜브링크/상태/수집일시/테마ID/생성ID/이미지폴더/테마/
+     챕터/재생목록/재생목록설명/고정댓글후보)
+
+□ 9. GitHub Secrets 의 GOOGLE_SHEET_NAMES 값에 새 탭 이름을
+     콤마(,)로 이어붙이기 — 이거 안 하면 upload.py가 그 탭을
+     아예 스캔하지 않아서 업로드전 행이 있어도 무시됨
+
+
+[D] 2_Syoutube_movieAuto (영상 제작 GUI) — 완전히 별개 시스템!
+──────────────────────────────────────────
+□ 10. 유튜브_제작_시작_v3.py 의 CHANNEL_MAP 에 채널ID 추가
+       "{채널번호}": "UC...",
+
+□ 11. 유튜브_제작_시작_v3.py 의 CHANNEL_NAMES 에 채널이름 추가
+       "{채널번호}": "채널이름",
+      → 이게 있어야 GUI 채널 선택 드롭다운에 새 채널이 보임
+
+
+──────────────────────────────────────────
+요약: OAuth 발급(1) → GitHub 시크릿(2) → 워크플로우 yml(3) →
+      upload.py 매핑(4,5) → 시트 탭(8) + 시트이름 시크릿(9) →
+      영상제작 GUI 매핑(10,11)
+빠뜨리기 제일 쉬운 곳: 3번(yml), 9번(GOOGLE_SHEET_NAMES)

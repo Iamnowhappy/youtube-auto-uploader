@@ -15,8 +15,21 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-# YouTube 업로드 권한
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# 2026-09-06 수정 — 사용자 리포트: 재생목록 생성(playlists().insert)과
+# 고정댓글 작성(commentThreads().insert)이 P/R열을 채워도 2026-07-26부터
+# 한 번도 실제로 동작한 적이 없었음. 원인은 그동안 youtube.upload(영상
+# 업로드 전용) 스코프로만 토큰을 발급해왔기 때문 — 이 스코프로는 재생목록/
+# 댓글 API가 403(권한 부족)으로 막히고, upload.py의 try/except가 이걸
+# 조용히 삼켜서 경고 로그만 남기고 넘어갔다(README 2026-07-26 항목에
+# "검증 안 됨"으로 이미 남아있던 위험이 실제로 터진 것). youtube.force-ssl은
+# 영상 업로드까지 포함하는 전체 쓰기 권한이라 youtube.upload를 대체한다.
+# ⚠️ 이 변경은 새로 발급하는 토큰부터만 적용됨 — 기존 youtube_token_ch*.json
+# 파일들은 전부 예전 스코프 그대로이므로, 채널별로 이 스크립트를 다시 실행해
+# 토큰을 재발급하고 GitHub Secrets도 갱신해야 실제로 고쳐진다.
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
 
 def get_token(ch: str = None):
     """
