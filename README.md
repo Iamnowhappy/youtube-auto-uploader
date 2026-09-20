@@ -637,6 +637,113 @@ R열에 다시 써넣도록 변경.
 - 검증: `python -m py_compile upload.py` 통과. 실사고 파일은 새 file_id로
   재업로드 완료 확인(권한 anyone/reader 설정 포함).
 
+### 2026-09-09 — 예약공개 영상에 자동 고정댓글이 항상 실패하던 원인 발견 + 수정
+사용자 리포트: 스튜디오에서 예약 업로드된 영상의 댓글 탭을 열어 수동으로
+댓글을 달아보려 해도 "이 계정에는 댓글을 작성할 권한이 없습니다"가 뜸
+→ "예약 공개로 해서 댓글이 작성이 안되는건가?"
+
+원인: 유튜브 자체 정책상 "비공개" 상태인 동영상에는 채널 소유자여도
+댓글을 남길 수 없다. `upload_to_youtube()`가 예약 업로드일 때
+`privacyStatus`를 `"private"`로 설정하고(`publishAt`이 지날 때까지
+비공개), 그 직후(같은 함수 안, 업로드 성공 로그 다음 줄)에 바로
+`post_comment_candidate()`로 고정댓글을 달려고 시도하는 구조였다. 즉
+"즉시 업로드"(privacy == "public")가 아닌 모든 예약 업로드(자동슬롯/
+수동날짜 방식 전부 포함)에서 자동 고정댓글은 지금까지 계속 이 오류로
+조용히 실패해왔을 것으로 추정됨 — 로그에 `⚠️ 댓글 작성 실패(권한 부족일
+수 있음)` 한 줄만 찍히고 지나가서 "권한 문제"로 오인하기 쉬웠고, 진짜
+원인(예약=비공개 상태)은 눈에 띄지 않았다.
+
+수정 (`upload.py`, `upload_to_youtube()`):
+- 고정댓글을 시도하기 직전에 위에서 이미 계산해둔 `privacy` 변수(예약
+  시각이 미래면 `"private"`, 즉시공개/예약시각이 이미 지났으면
+  `"public"`)를 확인해서, `privacy != "public"`이면 애초에
+  `post_comment_candidate()`를 호출하지 않고 그 이유를 로그에 명확히
+  남기도록 변경(`⏭ 고정댓글 건너뜀 — 예약공개(...) 상태라 아직 비공개.
+  유튜브 정책상 비공개 동영상엔 댓글을 못 답니다. 실제 공개된 뒤
+  스튜디오에서 직접 달아주세요: ...`).
+- 즉시공개 영상은 기존 동작(자동 게시 시도 → 성공 시 R열에 문구 기록)
+  그대로 유지.
+- 알려진 한계(사용자가 "앞으로는 이런 일이 별로 없을 것 같다"고 판단해
+  단순한 방식으로 결정): 예약 공개된 영상이 실제로 공개 전환된 뒤에는
+  아무도 자동으로 고정댓글을 달아주지 않는다 — 필요해지면 나중에
+  "공개 전환된 예약 영상만 다시 훑어서 그때 고정댓글을 다는" 별도 배치
+  스크립트(`senior_longform_batch_upload.py` 같은 패턴)를 추가로 만들
+  수 있음.
+- 검증: `python3 -m py_compile`/`ast.parse`로 `upload.py` 통과. 실제
+  유튜브 API 호출은 이 세션에서 불가(구글 API 네트워크 차단) — 로직
+  검토로만 확인.
+- ⚠️ 커밋 메모: 이 시점에 로컬에 쌓여있던 `.gitignore`/`README.md`/
+  `get_youtube_token.py`/`index.html`/`webapp/index.html`/
+  `SETUP_GUIDE.md`/`genspark_to_dropbox.py`/`260625_backup_upload.py`/
+  `실행.bat`/`.github/workflows/auto_upload.yml`의 "수정됨" 표시는
+  `git diff --ignore-all-space`로 확인한 결과 전부 줄바꿈 문자(CRLF/LF)
+  차이일 뿐 실제 내용 변경은 0줄이었다(순수 노이즈) — 실제 코드 변경은
+  `upload.py`뿐이었음. 커밋 자체는 노이즈 파일들을 같이 올려도 무해하나,
+  혹시 diff가 어색하게 크게 보이면 이 사실을 참고할 것.
+
 ---
 
-*마지막 수정: 2026-09-06*
+### 2026-09-13 — 유튜브 업로드 성공 시 인스타그램 릴스 자동 동시 게시
+사용자 요청: "유튜브... 인스타에 자동 게시 하는 것부터 작업해줘". 조사 결과
+코드는 이미 두 군데에 존재했지만 실제로는 아무것도 연결돼 있지 않았음:
+- `35_multi_channel_uploader/uploaders/instagram.py` — 완성된 Instagram
+  Graph API 릴스 업로더(로컬 파일 resumable 업로드)지만 별도의 수동 CLI
+  (`main.py`) 전용이라 이 자동 파이프라인과 무관했음.
+- `multi_uploader.py`(이 프로젝트 안에 있었음) — YouTube/Instagram/TikTok
+  동시 업로드용으로 만들어졌던 것으로 보이나 `upload.py`의 `main()` 어디서도
+  import되지 않는 죽은 코드였음. 게다가 그 안의 Instagram 구현은 Dropbox/
+  Drive **공개 URL**을 Meta 서버가 직접 내려받는 방식이라, 구글드라이브
+  소스일 때 `download_gdrive()`의 docstring이 이미 지적한 "바이러스 검사
+  확인 페이지" 문제로 깨질 위험이 있었고, 시트 I/J열에 결과를 쓰는 부분은
+  이미 O~R열로 옮겨진 챕터/재생목록/고정댓글 스키마와 충돌하는 낡은 버전
+  이었음(I열은 이제 "상태" 컬럼).
+- 새로 만든 `instagram_repost.py`가 이 둘을 안전하게 이어줌: 실제 업로드는
+  `35_multi_channel_uploader`의 로컬 파일 방식을 그대로 재사용(공개 URL
+  불필요, Drive 문제 회피)하고, 어떤 채널에 게시할지는 `multi_uploader.py`의
+  기존 `CHANNEL_PLATFORM_MAP`(채널 4, 10만 Instagram 대상)만 재사용.
+- `main()`의 `mark_as_done()` 직후에 한 줄 호출 추가. 인스타그램 실패는
+  항상 예외를 삼키고 로그만 남기므로 이미 완료된 유튜브 업로드에는 절대
+  영향 없음(기존 재생목록/고정댓글과 동일한 안전 패턴).
+- 이 프로젝트에서 반복적으로 겪은 cp949 콘솔 이모지 print 크래시를
+  `instagram_repost.py`에도 처음부터 `_log()` 래퍼로 방지(이모지 없이
+  `[OK]/[FAIL]/[SKIP]` 태그만 사용) — 실제로 초기 버전에서 이모지 print가
+  크래시하는 걸 직접 재현하고 수정함.
+- **아직 남은 일(코드가 아니라 계정 설정)**: `.env`의 `IG_USER_ID`,
+  `IG_ACCESS_TOKEN`이 비어있어서 지금은 항상 "미설정 → 건너뜀"으로 스킵됨.
+  Instagram을 Business 계정으로 전환하고 Meta 개발자 앱을 만든 뒤
+  `35_multi_channel_uploader/SETUP_GUIDE.md` 3번대로 `python auth/
+  meta_token_helper.py <토큰>`을 실행해서 `.env`를 채워야 실제로 게시되기
+  시작함 — 이건 본인 계정 로그인이 필요한 단계라 대신 할 수 없음.
+- 검증: `python -m py_compile upload.py instagram_repost.py` 통과.
+  `repost_to_instagram()`을 미설정 상태로 직접 호출해 크래시 없이 건너뛰는
+  것 확인.
+
+### 2026-09-13 (2차) — 업로드 성공 시 완성 썸네일을 `thumbnails.set()`으로 자동 세팅
+
+배경: 28_korean_folktale_longform/29_japan_senior_story_longform 쪽에서
+"업로드최적화_생성기(30번)로 만든 썸네일을 자동화하고 싶다"는 요청을 받고
+조사한 결과, 유튜브의 "테스트 및 비교"(제목/썸네일 A/B) 기능은 YouTube Data
+API에 전혀 노출돼 있지 않지만(스튜디오 전용, 자동화 불가), 커스텀 썸네일을
+영상에 세팅하는 `thumbnails.set()` 자체는 API로 가능함을 확인. 28/29번이
+캐릭터 일관성 있는 썸네일을 이미 자동 생성해 Google Drive에 올려두는 쪽을
+구현했고, 이 파일은 그 링크를 받아 실제로 영상에 세팅하는 마지막 한 조각만
+담당한다.
+
+- `upload_to_youtube()`에 `thumbnail_url=""` 인자 추가(하위호환 기본값).
+  값이 있으면(항상 Drive 링크) 기존 `download_gdrive()` 헬퍼로 내려받아
+  `service.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(...))`
+  호출. 재생목록/고정댓글과 동일한 위치·동일한 try/except 방어 패턴 —
+  실패해도 업로드 자체는 절대 실패 처리하지 않는다(전 채널 1~10 공유
+  크론이라 여기서 추가한 코드가 예외를 밖으로 던지면 안 됨). 임시 파일은
+  `finally`에서 삭제.
+- `main()`에서 T열(`row[19]`)을 새로 읽어 전달 — 28/29번 `config.py`에
+  같은 열 번호(`COL_THUMBNAIL_URL = 20`)로 방금 추가됨. 값이 비어있는
+  다른 채널(1~9 중 대부분)은 기존과 100% 동일하게 썸네일 세팅을 건너뛴다.
+- 검증: `python -m py_compile upload.py` 통과. ⚠️ 이 세션은 YouTube API
+  토큰이 없어 실제 `thumbnails.set()` 호출은 검증하지 못함 — 28/29번에서
+  T열이 실제로 채워진 뒤 다음 업로드 때 스튜디오에서 썸네일이 자동
+  세팅되는지 확인 필요.
+
+---
+
+*마지막 수정: 2026-09-13*

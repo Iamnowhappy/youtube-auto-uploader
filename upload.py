@@ -151,6 +151,8 @@ from google.auth.transport.requests import Request
 # 설계되어 있고, upload_to_youtube()/main()에서 항상 try/except로 감싸 호출한다.
 from chapters import build_description_with_chapters
 from playlist_ops import ensure_playlist, add_to_playlist
+from instagram_repost import repost_to_instagram
+from multi_uploader import CHANNEL_PLATFORM_MAP
 from comment_ops import post_comment_candidate
 
 KST = timezone(timedelta(hours=9))
@@ -465,7 +467,8 @@ SHORTS_MAX_SECONDS = 183
 
 def upload_to_youtube(service, video_path, title, description, scheduled="", channel_num="1",
                        chapters_raw="", playlist_name="", playlist_description="", pinned_comment="",
-                       contains_synthetic_media=None, sheet_name="", sheet=None, row_num=None):
+                       contains_synthetic_media=None, sheet_name="", sheet=None, row_num=None,
+                       thumbnail_url=""):
     channel_id   = CHANNEL_MAP.get(str(channel_num).strip(), CHANNEL_MAP["1"])
     channel_name = CHANNEL_NAMES.get(str(channel_num).strip(), f"채널{channel_num}")
     print(f"📺 채널: {channel_name} ({channel_id})")
@@ -632,22 +635,64 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
             print(f"   ⚠️ 재생목록 처리 중 예상치 못한 오류: {e}")
 
     if pinned_comment.strip():
+        # 2026-09-09 추가 — 사용자 리포트: 예약 업로드 직후에 스튜디오에서
+        # 수동으로 댓글을 달아보려 해도 "이 계정에는 댓글을 작성할 권한이
+        # 없습니다"가 뜸 → 원인은 권한이 아니라 "비공개 동영상에는 댓글을
+        # 남길 수 없다"는 유튜브 자체 정책(예약공개=publishAt 전까지는
+        # privacyStatus가 "private") 때문이었다. 즉 즉시공개(privacy ==
+        # "public")가 아닌 모든 예약 업로드에서 자동 고정댓글은 지금까지
+        # 항상 이 오류로 조용히 실패해왔을 것으로 추정됨(로그에 ⚠️ 한 줄만
+        # 찍히고 넘어가서 눈치채기 어려웠음). 예약 업로드일 땐 애초에 시도
+        # 하지 않고 그 이유를 로그에 명확히 남긴다 — 실제 공개된 뒤 사람이
+        # 직접 달거나, 필요해지면 나중에 "공개 전환된 예약 영상만 다시
+        # 훑어서 고정댓글을 다는" 별도 배치 스크립트를 추가할 수 있다.
+        if privacy != "public":
+            print(f"   ⏭ 고정댓글 건너뜀 — 예약공개({scheduled} KST) 상태라 아직 비공개."
+                  f" 유튜브 정책상 비공개 동영상엔 댓글을 못 답니다."
+                  f" 실제 공개된 뒤 스튜디오에서 직접 달아주세요: {pinned_comment.strip()[:40]}...")
+        else:
+            try:
+                post_comment_candidate(service, video_id, pinned_comment.strip())
+                # 2026-09-06 추가 — 사용자가 R열이 채널별 기본값으로
+                # 채워져도 시트엔 아무 것도 안 보여서 "진짜 됐는지" 확인할
+                # 방법이 없다고 지적함. R열이 원래 비어있던 채널10 영상도
+                # 댓글이 실제로 게시된 뒤엔 그 문구를 R열에 그대로 다시
+                # 써서, 시트만 봐도 "댓글이 실제로 달렸다"는 걸 확인할 수
+                # 있게 함(실패하면 아래 except로 빠지므로 이 줄까지 오지
+                # 않아 R열은 계속 비어있는 채로 남는다 — 즉 R열에 값이
+                # 있으면 성공, 없으면 실패/미시도라는 뜻이 됨).
+                if sheet is not None and row_num is not None:
+                    sheet.update_cell(row_num, 18, pinned_comment.strip())
+            except HttpError as e:
+                print(f"   ⚠️ 댓글 작성 실패(권한 부족일 수 있음): {e}")
+            except Exception as e:
+                print(f"   ⚠️ 댓글 작성 중 예상치 못한 오류: {e}")
+
+    # 2026-09-13 추가 — 28/29번 프로젝트가 finalize.py에서 이미 캐릭터
+    # 일관성 있는 썸네일을 합성해 Google Drive에 올려둔 링크(T열)를 여기서
+    # 실제 영상에 세팅한다. thumbnails.set()은 유튜브의 "테스트 및 비교"
+    # (제목/썸네일 A/B 실험) 기능 자체와는 다르다 — 그 기능은 Data API에
+    # 아예 노출돼 있지 않아(스튜디오 전용) 이 스크립트로 대체 불가능하고,
+    # 이건 어디까지나 "기본 썸네일 하나를 자동으로 세팅"하는 것뿐이다.
+    # 재생목록/고정댓글과 동일한 안전 원칙: 실패해도 업로드 자체는
+    # 절대 실패 처리하지 않는다(이 스크립트는 전 채널 공유 크론이므로).
+    if thumbnail_url.strip():
+        tmp_thumb_path = None
         try:
-            post_comment_candidate(service, video_id, pinned_comment.strip())
-            # 2026-09-06 추가 — 사용자가 R열이 채널별 기본값으로 채워져도
-            # 시트엔 아무 것도 안 보여서 "진짜 됐는지" 확인할 방법이 없다고
-            # 지적함. R열이 원래 비어있던 채널10 영상도 댓글이 실제로
-            # 게시된 뒤엔 그 문구를 R열에 그대로 다시 써서, 시트만 봐도
-            # "댓글이 실제로 달렸다"는 걸 확인할 수 있게 함(실패하면 아래
-            # except로 빠지므로 이 줄까지 오지 않아 R열은 계속 비어있는 채로
-            # 남는다 — 즉 R열에 값이 있으면 성공, 없으면 실패/미시도라는
-            # 뜻이 됨).
-            if sheet is not None and row_num is not None:
-                sheet.update_cell(row_num, 18, pinned_comment.strip())
+            print(f"   🖼️ 썸네일 세팅 중... ({thumbnail_url[:60]}...)")
+            tmp_thumb_path = download_gdrive(thumbnail_url.strip())
+            service.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(tmp_thumb_path, mimetype="image/png"),
+            ).execute()
+            print("   ✅ 썸네일 세팅 완료")
         except HttpError as e:
-            print(f"   ⚠️ 댓글 작성 실패(권한 부족일 수 있음): {e}")
+            print(f"   ⚠️ 썸네일 세팅 실패(권한 부족/파일 문제일 수 있음): {e}")
         except Exception as e:
-            print(f"   ⚠️ 댓글 작성 중 예상치 못한 오류: {e}")
+            print(f"   ⚠️ 썸네일 세팅 중 예상치 못한 오류: {e}")
+        finally:
+            if tmp_thumb_path and os.path.exists(tmp_thumb_path):
+                os.remove(tmp_thumb_path)
 
     return video_id, is_short
 
@@ -728,6 +773,10 @@ def main():
         # 다르게 강제하고 싶을 때만 쓰는 선택 오버라이드. 비어있으면(대부분의
         # 경우) 아래에서 CHANNEL_SYNTHETIC_MEDIA_MAP의 채널 기본값을 그대로 씀.
         synthetic_override_raw = row[18].strip().lower() if len(row) > 18 else ""  # S열: true/false, 비우면 채널 기본값
+        # 2026-09-13 추가 — T열: 28/29번 finalize.py가 캐릭터 일관성 썸네일을
+        # 합성해 Google Drive에 올려둔 링크. 비어있으면(대부분의 다른 채널)
+        # 기존과 100% 동일하게 썸네일 세팅을 건너뛴다.
+        thumbnail_url = row[19].strip() if len(row) > 19 else ""  # T열: 썸네일 Google Drive URL
         if synthetic_override_raw in ("true", "1", "yes", "예"):
             contains_synthetic_media = True
         elif synthetic_override_raw in ("false", "0", "no", "아니요"):
@@ -799,8 +848,24 @@ def main():
                 sheet_name=sheet_name,
                 sheet=sheet,
                 row_num=row_num,
+                thumbnail_url=thumbnail_url,
             )
             mark_as_done(sheet, row_num, video_id, is_short)
+
+            # 2026-09-13 추가 — 인스타그램 릴스 동시 게시. 미연결 상태로
+            # 방치돼 있던 multi_uploader.py의 채널별 게시 정책
+            # (CHANNEL_PLATFORM_MAP)만 재사용하고, 실제 업로드는
+            # 35_multi_channel_uploader의 로컬 파일 직접 업로드 방식을 씀
+            # (multi_uploader.py의 기존 방식은 Dropbox/Drive 공개 URL을
+            # Meta 서버가 직접 내려받는 구조라, 구글드라이브 소스일 때
+            # download_gdrive()의 docstring이 지적한 것과 같은 "바이러스
+            # 검사 확인 페이지" 문제로 깨질 수 있음 — 여기서는 이미
+            # 다운로드까지 끝난 local_path를 그대로 올려서 그 문제 자체를
+            # 피함). 실패해도 위 mark_as_done()은 이미 끝났으므로 유튜브
+            # 업로드 성공 여부에는 영향 없음.
+            if CHANNEL_PLATFORM_MAP.get(channel_num, {}).get("instagram", False):
+                repost_to_instagram(local_path, title, script)
+
             print(f"\n🎉 [{sheet_name}] 완료!")
         except Exception as e:
             sheet.update_cell(row_num, 5, "업로드전")
