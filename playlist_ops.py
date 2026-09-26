@@ -19,11 +19,21 @@ def ensure_playlist(service, title: str, description: str) -> str:
     channels = service.channels().list(part="id", mine=True).execute()
     channel_id = channels["items"][0]["id"]
 
-    existing = service.playlists().list(part="snippet", mine=True, maxResults=50).execute()
-    for pl in existing.get("items", []):
-        if pl["snippet"]["title"] == title:
-            print(f"   [재생목록] 기존 재생목록 재사용: {title}")
-            return pl["id"]
+    # 2026-09-25 수정 — 첫 50개만 보던 걸 전체 페이지 조회로. Shorts 시리즈를
+    # 재생목록으로 묶다 보면 50개를 넘기 쉬운데, 그러면 같은 이름 재생목록이
+    # 매번 새로 생기던 문제.
+    page_token = None
+    while True:
+        existing = service.playlists().list(
+            part="snippet", mine=True, maxResults=50, pageToken=page_token
+        ).execute()
+        for pl in existing.get("items", []):
+            if pl["snippet"]["title"] == title:
+                print(f"   [재생목록] 기존 재생목록 재사용: {title}")
+                return pl["id"]
+        page_token = existing.get("nextPageToken")
+        if not page_token:
+            break
 
     created = service.playlists().insert(
         part="snippet,status",

@@ -154,6 +154,14 @@ from playlist_ops import ensure_playlist, add_to_playlist
 from instagram_repost import repost_to_instagram
 from multi_uploader import CHANNEL_PLATFORM_MAP
 from comment_ops import post_comment_candidate
+from localization_ops import parse_localizations
+
+# 2026-09-25 추가 — 예약공개 영상은 비공개 상태라 댓글을 못 단다(아래
+# upload_to_youtube의 고정댓글 설명 참고). 그래서 예약 업로드 땐 R열에 이
+# 접두어를 붙여 "공개 대기 중"으로 남겨두고, post_pending_comments()가
+# 매 실행마다 공개로 전환됐는지 확인해서 그때 댓글을 게시한다.
+# R열 의미: "[대기] 문구" = 공개 대기 중 / "문구" = 게시 성공 / 빈칸 = 미시도·실패
+PENDING_COMMENT_PREFIX = "[대기] "
 
 KST = timezone(timedelta(hours=9))
 
@@ -249,6 +257,13 @@ def get_next_video(sheet):
     today_str = now_kst.strftime("%Y-%m-%d")
     all_rows  = _retry_gspread_call(sheet.get_all_values)
 
+    # 2026-09-26 추가 — 같은 영상이 두 번 공개돼 채널이 스팸으로 해지됨
+    # (사주숏츠시트 24/26행, 25/27행). 제목이나 영상 URL이 이미 업로드완료된
+    # 행과 같으면 올리지 않고 "중복차단"으로 표시한다(다른 채널로 올린 경우 포함).
+    done = [r for r in all_rows[1:] if len(r) > 4 and r[4].strip() == "업로드완료"]
+    done_titles = {r[0].strip() for r in done if r[0].strip()}
+    done_urls   = {u.strip() for r in done for u in r[2:4] if u.strip()}
+
     for i, row in enumerate(all_rows[1:], start=2):
         while len(row) < 7:
             row.append("")
@@ -261,6 +276,10 @@ def get_next_video(sheet):
         if status != "업로드전":
             continue
         if not video_url and not dropbox:
+            continue
+        if row[0].strip() in done_titles or {video_url, dropbox} & done_urls:
+            print(f"   🛑 {i}행: 이미 업로드된 영상과 제목/URL 중복 → '중복차단'으로 표시하고 건너뜀")
+            sheet.update_cell(i, 5, "중복차단")
             continue
 
         is_due = False
@@ -468,7 +487,7 @@ SHORTS_MAX_SECONDS = 183
 def upload_to_youtube(service, video_path, title, description, scheduled="", channel_num="1",
                        chapters_raw="", playlist_name="", playlist_description="", pinned_comment="",
                        contains_synthetic_media=None, sheet_name="", sheet=None, row_num=None,
-                       thumbnail_url=""):
+                       thumbnail_url="", localizations_raw="", ab_candidates=""):
     channel_id   = CHANNEL_MAP.get(str(channel_num).strip(), CHANNEL_MAP["1"])
     channel_name = CHANNEL_NAMES.get(str(channel_num).strip(), f"채널{channel_num}")
     print(f"📺 채널: {channel_name} ({channel_id})")
@@ -581,6 +600,16 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
     if publish_at:
         body["status"]["publishAt"] = publish_at
 
+    # 2026-09-25 추가 — U열 다국어 제목/설명(localization_ops.py 참고).
+    # localizations는 snippet.defaultLanguage가 있어야 받아주는데, 위에서
+    # 항상 채널별 기본 언어를 넣고 있으므로 조건 충족.
+    localizations = parse_localizations(localizations_raw, default_language)
+    upload_parts = "snippet,status"
+    if localizations:
+        body["localizations"] = localizations
+        upload_parts += ",localizations"
+        print(f"   🌐 다국어 제목/설명: {', '.join(localizations)}")
+
     # 2026-07-30 추가: AI 사용(사실적 합성/변경 콘텐츠) 공개를 업로드 시점에
     # API로 바로 선언. None이면(채널 매핑에도 없고 시트 오버라이드도 없으면)
     # 아예 필드를 안 보내서 기존 동작(유튜브 스튜디오 기본값/자동감지에 맡김)
@@ -603,7 +632,7 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
 
     print(f"🎬 업로드: {title}")
     request = service.videos().insert(
-        part="snippet,status",
+        part=upload_parts,
         body=body,
         media_body=media,
         notifySubscribers=notify_subscribers,
@@ -647,9 +676,15 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
         # 직접 달거나, 필요해지면 나중에 "공개 전환된 예약 영상만 다시
         # 훑어서 고정댓글을 다는" 별도 배치 스크립트를 추가할 수 있다.
         if privacy != "public":
-            print(f"   ⏭ 고정댓글 건너뜀 — 예약공개({scheduled} KST) 상태라 아직 비공개."
-                  f" 유튜브 정책상 비공개 동영상엔 댓글을 못 답니다."
-                  f" 실제 공개된 뒤 스튜디오에서 직접 달아주세요: {pinned_comment.strip()[:40]}...")
+            # 2026-09-25 수정 — 예전엔 여기서 버려졌다. 이제 R열에 대기 표시만
+            # 남기고, 공개 전환 후 post_pending_comments()가 자동 게시한다.
+            print(f"   ⏳ 고정댓글 대기 — 예약공개({scheduled} KST) 상태라 아직 비공개."
+                  f" 공개 전환 후 다음 실행에서 자동 게시됩니다.")
+            if sheet is not None and row_num is not None:
+                try:
+                    sheet.update_cell(row_num, 18, PENDING_COMMENT_PREFIX + pinned_comment.strip())
+                except Exception as e:
+                    print(f"   ⚠️ R열 대기 표시 실패(업로드는 완료됨): {e}")
         else:
             try:
                 post_comment_candidate(service, video_id, pinned_comment.strip())
@@ -694,7 +729,40 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
             if tmp_thumb_path and os.path.exists(tmp_thumb_path):
                 os.remove(tmp_thumb_path)
 
+    # 2026-09-25 추가 — V열 A/B 후보("제목2 | 제목3"). 스튜디오의 "테스트 및
+    # 비교"(내년 동영상 A/B 테스트로 확장 예정)는 API가 없어 자동 등록이
+    # 불가능하므로, 후보와 스튜디오 링크만 로그에 남긴다.
+    if ab_candidates.strip():
+        print(f"   🧪 A/B 후보: {ab_candidates.strip()}")
+        print(f"      → https://studio.youtube.com/video/{video_id}/edit 에서 '테스트 및 비교'로 등록")
+
     return video_id, is_short
+
+
+def post_pending_comments(sheet):
+    """R열이 "[대기] "로 시작하는 업로드완료 행 중, 이제 공개로 전환된 영상에
+    댓글을 게시하고 R열을 실제 문구로 바꾼다. 아직 비공개면 다음 실행으로 넘긴다.
+    업로드 크론을 막으면 안 되므로 행 단위로 실패를 삼킨다."""
+    rows = _retry_gspread_call(sheet.get_all_values)
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) < 18 or row[4].strip() != "업로드완료":
+            continue
+        if not row[17].startswith(PENDING_COMMENT_PREFIX):
+            continue
+        video_id = row[7].strip().rstrip("/").split("/")[-1]  # H열: youtu.be/ID 또는 shorts/ID
+        text = row[17][len(PENDING_COMMENT_PREFIX):].strip()
+        if not video_id or not text:
+            continue
+        try:
+            service = get_youtube_service(row[5].strip() or "1")
+            items = service.videos().list(part="status", id=video_id).execute().get("items", [])
+            if not items or items[0]["status"]["privacyStatus"] != "public":
+                continue
+            post_comment_candidate(service, video_id, text)
+            sheet.update_cell(i, 18, text)
+            print(f"   💬 {i}행: 공개 전환 확인 → 대기 댓글 게시 완료")
+        except Exception as e:
+            print(f"   ⚠️ {i}행 대기 댓글 게시 실패(다음 실행에서 재시도): {e}")
 
 
 # ──────────────────────────────────────────
@@ -724,6 +792,11 @@ def main():
         # 건너뛰고 나머지 시트는 계속 처리한다 — 예전엔 여기서 예외가 나면
         # main()의 for 루프 전체가 죽어서 뒤에 있는 다른 채널 시트들은
         # 아예 시도조차 안 됐다.
+        try:
+            post_pending_comments(sheet)
+        except Exception as e:
+            print(f"   ⚠️ 대기 댓글 확인 실패(업로드는 계속 진행): {e}")
+
         try:
             row_num, row, scheduled = get_next_video(sheet)
         except Exception as e:
@@ -777,6 +850,9 @@ def main():
         # 합성해 Google Drive에 올려둔 링크. 비어있으면(대부분의 다른 채널)
         # 기존과 100% 동일하게 썸네일 세팅을 건너뛴다.
         thumbnail_url = row[19].strip() if len(row) > 19 else ""  # T열: 썸네일 Google Drive URL
+        # 2026-09-25 추가 — U/V열, 비어있으면 기존과 100% 동일하게 동작.
+        localizations_raw = row[20].strip() if len(row) > 20 else ""  # U열: 다국어 JSON (upload_meta.json의 localizations)
+        ab_candidates     = row[21].strip() if len(row) > 21 else ""  # V열: A/B 후보 "제목2 | 제목3"
         if synthetic_override_raw in ("true", "1", "yes", "예"):
             contains_synthetic_media = True
         elif synthetic_override_raw in ("false", "0", "no", "아니요"):
@@ -836,6 +912,7 @@ def main():
                 print(f"   ❌ [{sheet_name}] 다운로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
             continue
 
+        video_id = None
         try:
             yt_service = get_youtube_service(channel_num)
             video_id, is_short = upload_to_youtube(
@@ -849,6 +926,8 @@ def main():
                 sheet=sheet,
                 row_num=row_num,
                 thumbnail_url=thumbnail_url,
+                localizations_raw=localizations_raw,
+                ab_candidates=ab_candidates,
             )
             mark_as_done(sheet, row_num, video_id, is_short)
 
@@ -868,6 +947,17 @@ def main():
 
             print(f"\n🎉 [{sheet_name}] 완료!")
         except Exception as e:
+            # 2026-09-26 추가 — 유튜브엔 이미 올라갔는데 시트 기록만 실패한 경우
+            # "업로드전"으로 되돌리면 다음 실행에서 같은 영상이 또 올라간다.
+            if video_id:
+                print(f"   ⚠️ [{sheet_name}] 업로드는 성공(video_id={video_id}), 시트 기록만 실패: {e}")
+                try:
+                    _retry_gspread_call(sheet.update_cell, row_num, 5, "업로드완료")
+                    _retry_gspread_call(sheet.update_cell, row_num, 8, f"https://youtu.be/{video_id}")
+                except Exception as e2:
+                    # E열은 "업로드중"으로 남아 재업로드되지 않는다 — 사람이 직접 정리.
+                    print(f"   ❌ {row_num}행 시트 기록 재시도도 실패, '업로드중'으로 둠: {e2}")
+                continue
             sheet.update_cell(row_num, 5, "업로드전")
             print(f"   ❌ [{sheet_name}] 업로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
         finally:
