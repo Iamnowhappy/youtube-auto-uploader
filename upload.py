@@ -257,6 +257,13 @@ def get_next_video(sheet):
     today_str = now_kst.strftime("%Y-%m-%d")
     all_rows  = _retry_gspread_call(sheet.get_all_values)
 
+    # 2026-09-26 추가 — 같은 영상이 두 번 공개돼 채널이 스팸으로 해지됨
+    # (사주숏츠시트 24/26행, 25/27행). 제목이나 영상 URL이 이미 업로드완료된
+    # 행과 같으면 올리지 않고 "중복차단"으로 표시한다(다른 채널로 올린 경우 포함).
+    done = [r for r in all_rows[1:] if len(r) > 4 and r[4].strip() == "업로드완료"]
+    done_titles = {r[0].strip() for r in done if r[0].strip()}
+    done_urls   = {u.strip() for r in done for u in r[2:4] if u.strip()}
+
     for i, row in enumerate(all_rows[1:], start=2):
         while len(row) < 7:
             row.append("")
@@ -269,6 +276,10 @@ def get_next_video(sheet):
         if status != "업로드전":
             continue
         if not video_url and not dropbox:
+            continue
+        if row[0].strip() in done_titles or {video_url, dropbox} & done_urls:
+            print(f"   🛑 {i}행: 이미 업로드된 영상과 제목/URL 중복 → '중복차단'으로 표시하고 건너뜀")
+            sheet.update_cell(i, 5, "중복차단")
             continue
 
         is_due = False
@@ -670,7 +681,10 @@ def upload_to_youtube(service, video_path, title, description, scheduled="", cha
             print(f"   ⏳ 고정댓글 대기 — 예약공개({scheduled} KST) 상태라 아직 비공개."
                   f" 공개 전환 후 다음 실행에서 자동 게시됩니다.")
             if sheet is not None and row_num is not None:
-                sheet.update_cell(row_num, 18, PENDING_COMMENT_PREFIX + pinned_comment.strip())
+                try:
+                    sheet.update_cell(row_num, 18, PENDING_COMMENT_PREFIX + pinned_comment.strip())
+                except Exception as e:
+                    print(f"   ⚠️ R열 대기 표시 실패(업로드는 완료됨): {e}")
         else:
             try:
                 post_comment_candidate(service, video_id, pinned_comment.strip())
@@ -898,6 +912,7 @@ def main():
                 print(f"   ❌ [{sheet_name}] 다운로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
             continue
 
+        video_id = None
         try:
             yt_service = get_youtube_service(channel_num)
             video_id, is_short = upload_to_youtube(
@@ -932,6 +947,17 @@ def main():
 
             print(f"\n🎉 [{sheet_name}] 완료!")
         except Exception as e:
+            # 2026-09-26 추가 — 유튜브엔 이미 올라갔는데 시트 기록만 실패한 경우
+            # "업로드전"으로 되돌리면 다음 실행에서 같은 영상이 또 올라간다.
+            if video_id:
+                print(f"   ⚠️ [{sheet_name}] 업로드는 성공(video_id={video_id}), 시트 기록만 실패: {e}")
+                try:
+                    _retry_gspread_call(sheet.update_cell, row_num, 5, "업로드완료")
+                    _retry_gspread_call(sheet.update_cell, row_num, 8, f"https://youtu.be/{video_id}")
+                except Exception as e2:
+                    # E열은 "업로드중"으로 남아 재업로드되지 않는다 — 사람이 직접 정리.
+                    print(f"   ❌ {row_num}행 시트 기록 재시도도 실패, '업로드중'으로 둠: {e2}")
+                continue
             sheet.update_cell(row_num, 5, "업로드전")
             print(f"   ❌ [{sheet_name}] 업로드 실패 — '업로드전'으로 되돌림, 다음 실행에서 재시도: {e}")
         finally:
